@@ -1,0 +1,7 @@
+[package]
+name = "alpha-probe"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alpha-organism = { path = "../alpha-organism" }

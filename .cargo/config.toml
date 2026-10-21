@@ -1,0 +1,4 @@
+# Hardware-conscious build configuration for Mini-PC (AMD Ryzen 7 6800H, 16 threads, 30 GiB RAM)
+# Caps parallel rustc codegen jobs to 4 to prevent RAM spikes and CPU starvation.
+[build]
+jobs = 4

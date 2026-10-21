@@ -1,0 +1,10 @@
+[package]
+name = "alpha-exams"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alpha-iface = { path = "../alpha-iface" }
+alpha-organism = { path = "../alpha-organism" }
+alpha-world = { path = "../alpha-world" }
+alpha-probe = { path = "../alpha-probe" }

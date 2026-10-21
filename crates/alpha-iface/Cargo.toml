@@ -1,0 +1,4 @@
+[package]
+name = "alpha-iface"
+version.workspace = true
+edition.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "alpha-world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+alpha-iface = { path = "../alpha-iface" }
+alpha-organism = { path = "../alpha-organism" }

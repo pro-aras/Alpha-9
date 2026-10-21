@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/alpha-iface",
+    "crates/alpha-organism",
+    "crates/alpha-world",
+    "crates/alpha-probe",
+    "crates/alpha-exams",
+    "crates/alpha-bridge",
+]
+
+[workspace.package]
+version = "9.0.0"
+edition = "2021"
+authors = ["Ahmad <ops.proaras.app>"]
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
