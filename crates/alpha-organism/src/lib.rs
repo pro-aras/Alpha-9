@@ -270,7 +270,7 @@ impl Organism {
         let (blobs, _) = Retina::segment(rgb, width, height);
         let fov = self.genome.fovea_dim;
         for b in &blobs {
-            let patch = Retina::fovea_form(b, fov);
+            let patch = Retina::log_polar_form(b, fov, fov);
             self.v1_features(&patch, true);
             self.v4_features(&b.colour_opp, true);
         }
@@ -281,7 +281,7 @@ impl Organism {
         let fov = self.genome.fovea_dim;
         let mut objs = Vec::with_capacity(blobs.len());
         for b in &blobs {
-            let fs = self.v1_features(&Retina::fovea_form(b, fov), false);
+            let fs = self.v1_features(&Retina::log_polar_form(b, fov, fov), false);
             let fc = self.v4_features(&b.colour_opp, false);
             let s = if learn { self.it.fire_and_learn(&fs, None) } else { self.it.fire(&fs) };
             let c = if learn { self.c4.fire_and_learn(&fc, None) } else { self.c4.fire(&fc) };

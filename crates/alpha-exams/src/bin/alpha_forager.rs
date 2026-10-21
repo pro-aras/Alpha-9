@@ -1,15 +1,149 @@
 //! Alpha 9 Sensory Input Feeder & Autonomous Mini-PC Knowledge Forager (`alpha_forager`).
+//!
+//! Features:
+//! 1. Direct visual (.ppm) and auditory (.wav) sensory feeding (`--mode feed`)
+//! 2. Autonomous Curiosity-Driven Mini-PC Knowledge Foraging (`--mode forage`) across:
+//!    - Stream 0: Real Mini-PC LibriSpeech Human Speech WAVs (`/data/alpha3-library/audio/librispeech`)
+//!    - Stream 1: Real Mini-PC Visual Scenes sampled via Biological Log-Polar Retina (`/data/alpha3-library/K/scenes`)
+//!    - Stream 2: Cross-Situational Grounded Naming Stream
+//!    - Stream 3: Local Research/Knowledge Document Reader (`/data/research` & `/data/dev/alpha9` rendered onto a visual canvas & scanned via Log-Polar Saccades + spoken syllables)
+//!    - Stream 4: Unlearnable White-Noise ("Noisy TV" trap control)
+//! 3. Persistent Binary Brain Checkpointing (`--checkpoint /data/dev/alpha9/state/organism.bin`)
+//!    so synaptic weights, lexicon prototypes, and homeostatic state persist across runs.
 
 use std::env;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use alpha_iface::SensoryFrame;
 use alpha_organism::curiosity::StreamCuriosityTracker;
 use alpha_organism::genome::Genome;
+use alpha_organism::sensors::Retina;
 use alpha_organism::util::{l2_norm, Rng64};
 use alpha_organism::Organism;
 use alpha_world::{render_scene, synthesize_word_utterance, WorldObject, NUM_COLOURS, NUM_SHAPES, NUM_WORDS};
+
+const MAGIC: &[u8; 8] = b"ALPHA9V1";
+
+fn write_u64(w: &mut Vec<u8>, v: u64) {
+    w.extend_from_slice(&v.to_le_bytes());
+}
+fn write_f32_slice(w: &mut Vec<u8>, s: &[f32]) {
+    write_u64(w, s.len() as u64);
+    for &x in s {
+        w.extend_from_slice(&x.to_le_bytes());
+    }
+}
+fn read_u64(r: &[u8], pos: &mut usize) -> Option<u64> {
+    if *pos + 8 > r.len() {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&r[*pos..*pos + 8]);
+    *pos += 8;
+    Some(u64::from_le_bytes(b))
+}
+fn read_f32_vec(r: &[u8], pos: &mut usize) -> Option<Vec<f32>> {
+    let len = read_u64(r, pos)? as usize;
+    if *pos + len * 4 > r.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&r[*pos..*pos + 4]);
+        *pos += 4;
+        out.push(f32::from_le_bytes(b));
+    }
+    Some(out)
+}
+
+fn save_checkpoint(org: &Organism, path: &Path) -> std::io::Result<usize> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut buf = Vec::with_capacity(8 * 1024 * 1024);
+    buf.extend_from_slice(MAGIC);
+    write_u64(&mut buf, org.step_count);
+    write_f32_slice(&mut buf, &org.body.state);
+    write_f32_slice(&mut buf, &org.binding.bs);
+    write_f32_slice(&mut buf, &org.binding.bc);
+    write_u64(&mut buf, org.binding.lexicon.len() as u64);
+    for (p, &cnt) in org.binding.lexicon.iter().zip(org.binding.lex_count.iter()) {
+        write_u64(&mut buf, cnt as u64);
+        write_f32_slice(&mut buf, p);
+    }
+    let mut f = File::create(path)?;
+    f.write_all(&buf)?;
+    Ok(buf.len())
+}
+
+fn load_checkpoint(org: &mut Organism, path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() || buf.len() < 16 || &buf[0..8] != MAGIC {
+        return false;
+    }
+    let mut pos = 8usize;
+    let Some(steps) = read_u64(&buf, &mut pos) else { return false; };
+    let Some(body_st) = read_f32_vec(&buf, &mut pos) else { return false; };
+    let Some(bs) = read_f32_vec(&buf, &mut pos) else { return false; };
+    let Some(bc) = read_f32_vec(&buf, &mut pos) else { return false; };
+    let Some(n_lex) = read_u64(&buf, &mut pos) else { return false; };
+
+    if body_st.len() == 4 && bs.len() == org.binding.bs.len() && bc.len() == org.binding.bc.len() {
+        org.step_count = steps;
+        org.body.state.copy_from_slice(&body_st);
+        org.binding.bs = bs;
+        org.binding.bc = bc;
+        org.binding.lexicon.clear();
+        org.binding.lex_count.clear();
+        for _ in 0..(n_lex as usize) {
+            if let (Some(cnt), Some(p)) = (read_u64(&buf, &mut pos), read_f32_vec(&buf, &mut pos)) {
+                org.binding.lex_count.push(cnt as u32);
+                org.binding.lexicon.push(p);
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// Render a slice of ASCII/UTF-8 bytes from a local document onto a 128x128 RGB visual canvas
+/// as structured 5x7 visual glyph patterns so the organism reads text exclusively through its
+/// biological Log-Polar Retina (zero raw strings ever cross `SensoryFrame`).
+fn render_document_page_to_rgb(doc_bytes: &[u8], offset: usize) -> (Vec<u8>, usize, usize, usize) {
+    let (w, h) = (128usize, 128usize);
+    let mut rgb = vec![24u8; w * h * 3]; // Dark-slate paper background
+    let slice_len = 64usize.min(doc_bytes.len().saturating_sub(offset));
+    let mut dominant_byte = 0usize;
+
+    for idx in 0..slice_len {
+        let ch = doc_bytes[offset + idx];
+        if idx == 0 {
+            dominant_byte = (ch as usize) % NUM_WORDS;
+        }
+        let row = idx / 8;
+        let col = idx % 8;
+        let y0 = 12 + row * 13;
+        let x0 = 12 + col * 13;
+        // Deterministic 5x7 visual glyph bitmap from byte bits
+        for gy in 0..7 {
+            for gx in 0..5 {
+                let bit = ((ch as usize).wrapping_mul(gy + 3).wrapping_add(gx * 7) >> ((gy + gx) % 6)) & 1;
+                if bit == 1 && y0 + gy < h && x0 + gx < w {
+                    let p = ((y0 + gy) * w + (x0 + gx)) * 3;
+                    rgb[p] = 235;
+                    rgb[p + 1] = 220;
+                    rgb[p + 2] = 180;
+                }
+            }
+        }
+    }
+    (rgb, w, h, dominant_byte)
+}
 
 fn read_ppm_p6(path: &Path) -> Option<(Vec<u8>, usize, usize)> {
     let mut f = File::open(path).ok()?;
@@ -131,6 +265,7 @@ fn main() {
     let mut mode = "forage".to_string();
     let mut ppm_path: Option<PathBuf> = None;
     let mut wav_path: Option<PathBuf> = None;
+    let mut ckpt_path = PathBuf::from("/data/dev/alpha9/state/organism.bin");
     let mut steps = 120usize;
 
     let mut i = 1usize;
@@ -148,6 +283,10 @@ fn main() {
                 wav_path = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--checkpoint" if i + 1 < args.len() => {
+                ckpt_path = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
             "--steps" if i + 1 < args.len() => {
                 steps = args[i + 1].parse().unwrap_or(120);
                 i += 2;
@@ -159,6 +298,7 @@ fn main() {
     }
 
     let mut org = Organism::new(Genome::default());
+    let loaded = load_checkpoint(&mut org, &ckpt_path);
 
     if mode == "feed" {
         let (rgb, w, h) = ppm_path
@@ -178,14 +318,27 @@ fn main() {
             body_flux: [0.02 * ram_ok, 0.02 * cpu_ok, 0.03, 0.02],
         };
         let motor = org.step(&frame);
-        println!(
-            "[FEED] image={}x{}, pcm_samples={}, gaze=({:.2},{:.2}), fixation={:?}, vocal_pcm_out={} samples, distress={:.4}, valence={:+.4}, arousal={:.4}, ram_mb={:.2}",
+        let (lp_sheet, cone_opp) = Retina::sample_log_polar_foveation(
+            &rgb,
             w,
             h,
-            pcm.len(),
+            motor.gaze_xy[1] * (h as f32),
+            motor.gaze_xy[0] * (w as f32),
+            12,
+            24,
+            48.0,
+        );
+        println!(
+            "[FEED] ckpt_loaded={}, image={}x{}, logpolar_rings=12x24(energy={:.2}, cone_opp=[{:.2},{:.2},{:.2}]), gaze=({:.2},{:.2}), vocal_pcm_out={} samples, distress={:.4}, valence={:+.4}, arousal={:.4}, ram_mb={:.2}",
+            loaded,
+            w,
+            h,
+            l2_norm(&lp_sheet),
+            cone_opp[0],
+            cone_opp[1],
+            cone_opp[2],
             motor.gaze_xy[0],
             motor.gaze_xy[1],
-            motor.fixation_blob,
             motor.pcm_out.len(),
             org.body.distress,
             org.body.valence,
@@ -199,31 +352,44 @@ fn main() {
     collect_files_bounded(Path::new("/data/alpha3-library/K/scenes"), "ppm", 400, &mut ppm_files);
     let mut wav_files = Vec::new();
     collect_files_bounded(Path::new("/data/alpha3-library/audio/librispeech/dev-clean-wav"), "wav", 400, &mut wav_files);
+    let mut doc_files = Vec::new();
+    collect_files_bounded(Path::new("/data/research"), "md", 100, &mut doc_files);
+    collect_files_bounded(Path::new("/data/dev/alpha9"), "md", 20, &mut doc_files);
 
     println!("==========================================================================");
-    println!("ALPHA 9 AUTONOMOUS MINI-PC KNOWLEDGE FORAGER");
+    println!("ALPHA 9 AUTONOMOUS MINI-PC KNOWLEDGE FORAGER (LOG-POLAR RETINA + PERSISTENT BRAIN)");
     println!(
-        "Discovered local Mini-PC streams: {} real PPM scenes, {} real LibriSpeech WAVs",
+        "Checkpoint loaded: {} (prior steps={}, prior lexicon={})",
+        loaded,
+        org.step_count,
+        org.binding.lexicon.len()
+    );
+    println!(
+        "Mini-PC Streams: {} PPM scenes, {} LibriSpeech WAVs, {} local Markdown/Research docs",
         ppm_files.len(),
-        wav_files.len()
+        wav_files.len(),
+        doc_files.len()
     );
     println!("==========================================================================");
 
+    // 5 Streams:
+    // 0: LibriSpeech WAVs | 1: Log-Polar PPM Scenes | 2: Cross-Situational Naming | 3: Visual-Auditory Document Reader | 4: Noisy-TV
     let mut trackers = [
         StreamCuriosityTracker::new(16),
         StreamCuriosityTracker::new(16),
         StreamCuriosityTracker::new(16),
         StreamCuriosityTracker::new(16),
+        StreamCuriosityTracker::new(16),
     ];
-    let mut stream_counts = [0usize; 4];
-    let mut rng = Rng64::new(2026);
+    let mut stream_counts = [0usize; 5];
+    let mut rng = Rng64::new(2026 + org.step_count);
     let mut total_pruned = 0usize;
 
     for step in 0..steps {
-        let mut best_s = step % 4;
-        if step >= 16 {
+        let mut best_s = step % 5;
+        if step >= 20 {
             let mut best_score = f32::NEG_INFINITY;
-            for s in 0..4 {
+            for s in 0..5 {
                 let noise = 0.02 * rng.standard_normal();
                 let score = trackers[s].learning_progress + noise;
                 if score > best_score {
@@ -252,13 +418,9 @@ fn main() {
                 if !ppm_files.is_empty() {
                     let p = &ppm_files[step % ppm_files.len()];
                     if let Some((rgb, w, h)) = read_ppm_p6(p) {
+                        let (lp_sheet, _) = Retina::sample_log_polar_foveation(&rgb, w, h, 64.0, 64.0, 12, 24, 48.0);
                         org.develop_vision(&rgb, w, h);
-                        let (objs, _) = org.perceive_objects(&rgb, w, h, true);
-                        if let Some(first) = objs.first() {
-                            first.s.iter().take(16).copied().collect()
-                        } else {
-                            vec![0.1f32; 16]
-                        }
+                        lp_sheet.iter().take(16).copied().collect()
                     } else {
                         vec![0.1f32; 16]
                     }
@@ -282,6 +444,21 @@ fn main() {
                 }
                 pat
             }
+            3 => {
+                // Visual-Auditory Document Reader via Log-Polar Saccades
+                let doc_bytes = if !doc_files.is_empty() {
+                    fs::read(&doc_files[step % doc_files.len()]).unwrap_or_else(|_| vec![b'A'; 256])
+                } else {
+                    vec![b'A'; 256]
+                };
+                let offset = (step * 64) % doc_bytes.len().max(1);
+                let (rgb, w, h, syl_id) = render_document_page_to_rgb(&doc_bytes, offset);
+                let saccade_x = 24.0 + ((step % 4) as f32) * 24.0;
+                let (lp_sheet, _) = Retina::sample_log_polar_foveation(&rgb, w, h, 64.0, saccade_x, 12, 24, 42.0);
+                let pcm = synthesize_word_utterance(syl_id % NUM_WORDS, step % 10, 0.0, &mut rng);
+                org.experience(&rgb, w, h, &pcm, 2);
+                lp_sheet.iter().take(16).copied().collect()
+            }
             _ => {
                 (0..16).map(|_| rng.standard_normal().clamp(-1.0, 1.0)).collect()
             }
@@ -301,19 +478,17 @@ fn main() {
         }
     }
 
+    let saved_bytes = save_checkpoint(&org, &ckpt_path).unwrap_or(0);
     println!(
-        "[FORAGE DONE] steps={}, lexicon_prototypes={}, total_pruned_synapses={}, heap={:.2} MB",
-        steps,
+        "[FORAGE DONE] total_steps={}, lexicon_prototypes={}, pruned_synapses={}, ckpt_saved={:.2} MB, heap={:.2} MB",
+        org.step_count,
         org.binding.lexicon.len(),
         total_pruned,
+        (saved_bytes as f32) / (1024.0 * 1024.0),
         (org.memory_bytes() as f32) / (1024.0 * 1024.0)
     );
     println!(
-        "[CURIOSITY ALLOCATION] Stream0(LibriSpeech)={} | Stream1(PPM Scenes)={} | Stream2(Grounded Naming)={} | Stream3(Noisy-TV)={}",
-        stream_counts[0], stream_counts[1], stream_counts[2], stream_counts[3]
-    );
-    println!(
-        "[INSULA & BODY VITALS] energy_atp={:.3}, thermal={:.3}, distress={:.4}, valence={:+.4}, arousal={:.4}",
-        org.body.state[0], org.body.state[1], org.body.distress, org.body.valence, org.body.arousal
+        "[CURIOSITY ALLOCATION] Stream0(LibriSpeech)={} | Stream1(LogPolar Scenes)={} | Stream2(Naming)={} | Stream3(DocReader)={} | Stream4(Noisy-TV)={}",
+        stream_counts[0], stream_counts[1], stream_counts[2], stream_counts[3], stream_counts[4]
     );
 }

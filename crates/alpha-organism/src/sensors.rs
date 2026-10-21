@@ -295,6 +295,184 @@ impl Retina {
         (blobs, fig)
     }
 
+
+    /// Biological Log-Polar Retinal Sampling around fixation `(gx, gy)` (Schwartz 1980, Curcio 1990).
+    /// Samples `n_rings` exponentially spaced eccentricity rings (foveola -> fovea -> parafovea -> periphery)
+    /// across `n_sectors` polar angles `theta in [0, 2*pi)`, with space-variant Center-Surround
+    /// Difference-of-Gaussians (DoG) receptive fields whose pooling radius grows with eccentricity `r`.
+    /// Returns a `(n_rings * n_sectors)` log-polar cortical sheet (V1 retinotopic map).
+    pub fn sample_log_polar_foveation(
+        rgb: &[u8],
+        width: usize,
+        height: usize,
+        gy: f32,
+        gx: f32,
+        n_rings: usize,
+        n_sectors: usize,
+        r_max: f32,
+    ) -> (Vec<f32>, [f32; 3]) {
+        let n_pix = width * height;
+        if rgb.len() < n_pix * 3 || n_pix == 0 {
+            return (vec![0.0; n_rings * n_sectors], [1.0, 0.0, 0.0]);
+        }
+        let mut r_ch = Vec::with_capacity(n_pix);
+        let mut g_ch = Vec::with_capacity(n_pix);
+        let mut b_ch = Vec::with_capacity(n_pix);
+        for i in 0..n_pix {
+            r_ch.push(rgb[i * 3] as f32 + 1.0);
+            g_ch.push(rgb[i * 3 + 1] as f32 + 1.0);
+            b_ch.push(rgb[i * 3 + 2] as f32 + 1.0);
+        }
+        let bg_r = median_f32(&r_ch);
+        let bg_g = median_f32(&g_ch);
+        let bg_b = median_f32(&b_ch);
+        let bg_mean = ((bg_r + bg_g + bg_b) / 3.0).max(1.0);
+
+        let mut opp_l = Vec::with_capacity(n_pix);
+        let mut opp_rg = Vec::with_capacity(n_pix);
+        let mut opp_by = Vec::with_capacity(n_pix);
+        for i in 0..n_pix {
+            let (r, g, b) = (r_ch[i], g_ch[i], b_ch[i]);
+            opp_l.push(((r + g + b) / 3.0) / bg_mean);
+            opp_rg.push((r - g) / bg_mean);
+            opp_by.push((b - 0.5 * (r + g)) / bg_mean);
+        }
+        let bgo_l = median_f32(&opp_l);
+        let bgo_rg = median_f32(&opp_rg);
+        let bgo_by = median_f32(&opp_by);
+
+        let mut sheet = vec![0.0f32; n_rings * n_sectors];
+        let mut fov_l = 0.0f32;
+        let mut fov_rg = 0.0f32;
+        let mut fov_by = 0.0f32;
+        let mut fov_w = 0.0f32;
+
+        let alpha = 2.4f32;
+        let denom = alpha.exp() - 1.0;
+
+        for m in 0..n_rings {
+            let u = (m as f32) / ((n_rings.saturating_sub(1)).max(1) as f32);
+            // Exponentially spaced eccentricity radius r_m (dense in foveola, wide in periphery)
+            let r_m = r_max * ((alpha * u).exp() - 1.0) / denom;
+            // Space-variant RGC pooling radius: 1px in central foveola, expanding in periphery
+            let rad_c = (0.15 * r_m).floor() as isize;
+            let rad_s = ((0.35 * r_m).ceil() as isize).max(1);
+
+            for s in 0..n_sectors {
+                let theta = 2.0 * PI * (s as f32) / (n_sectors as f32);
+                let cy = gy + r_m * theta.sin();
+                let cx = gx + r_m * theta.cos();
+
+                let mut center_sum = 0.0f32;
+                let mut center_cnt = 0.0f32;
+                for dy in -rad_c..=rad_c {
+                    for dx in -rad_c..=rad_c {
+                        let iy = (cy.round() as isize + dy).clamp(0, height as isize - 1) as usize;
+                        let ix = (cx.round() as isize + dx).clamp(0, width as isize - 1) as usize;
+                        let p = iy * width + ix;
+                        let dl = opp_l[p] - bgo_l;
+                        let drg = opp_rg[p] - bgo_rg;
+                        let dby = opp_by[p] - bgo_by;
+                        let contrast = (dl * dl + drg * drg + dby * dby).sqrt();
+                        center_sum += contrast;
+                        center_cnt += 1.0;
+
+                        // Parvocellular (P-cell) cone opponent sampling weighted strongly toward central foveola
+                        if m < n_rings / 2 && contrast > 0.08 {
+                            let w_f = 1.0 / (1.0 + r_m * 0.25);
+                            fov_l += w_f * opp_l[p];
+                            fov_rg += w_f * opp_rg[p];
+                            fov_by += w_f * opp_by[p];
+                            fov_w += w_f;
+                        }
+                    }
+                }
+                let c_val = center_sum / center_cnt.max(1.0);
+
+                // Surround ring for DoG lateral inhibition
+                let mut surr_sum = 0.0f32;
+                let mut surr_cnt = 0.0f32;
+                for k in 0..4 {
+                    let ang = (k as f32) * 0.5 * PI;
+                    let sy = (cy + (rad_s as f32) * ang.sin()).round().clamp(0.0, (height - 1) as f32) as usize;
+                    let sx = (cx + (rad_s as f32) * ang.cos()).round().clamp(0.0, (width - 1) as f32) as usize;
+                    let p = sy * width + sx;
+                    let dl = opp_l[p] - bgo_l;
+                    let drg = opp_rg[p] - bgo_rg;
+                    let dby = opp_by[p] - bgo_by;
+                    surr_sum += (dl * dl + drg * drg + dby * dby).sqrt();
+                    surr_cnt += 1.0;
+                }
+                let s_val = surr_sum / surr_cnt.max(1.0);
+                // ON-center / OFF-surround ganglion response + sustained parvocellular contrast
+                sheet[m * n_sectors + s] = (c_val - 0.35 * s_val).max(0.0) + 0.65 * c_val;
+            }
+        }
+
+        let cone_opp = if fov_w > 1e-5 {
+            [fov_l / fov_w, fov_rg / fov_w, fov_by / fov_w]
+        } else {
+            [bgo_l, bgo_rg, bgo_by]
+        };
+        (sheet, cone_opp)
+    }
+
+    /// Log-polar form projection for a detected saccade target blob:
+    /// Computes the object's characteristic radial scale `r_max` from its retinal eccentricity spread
+    /// around its centroid `(cy, cx)` and samples a `(n_rings * n_sectors)` log-polar representation.
+    /// Because radii are normalized to the peripheral extent of the fixated target (ocular accommodation /
+    /// microsaccadic centering), scaling an object by 2x produces the same log-polar cortical map!
+    pub fn log_polar_form(blob: &RetinalBlob, n_rings: usize, n_sectors: usize) -> Vec<f32> {
+        if blob.ys.is_empty() {
+            return vec![0.0; n_rings * n_sectors];
+        }
+        let y0 = *blob.ys.iter().min().unwrap_or(&0) as usize;
+        let y1 = (*blob.ys.iter().max().unwrap_or(&0) as usize) + 1;
+        let x0 = *blob.xs.iter().min().unwrap_or(&0) as usize;
+        let x1 = (*blob.xs.iter().max().unwrap_or(&0) as usize) + 1;
+        let h = y1.saturating_sub(y0).max(1);
+        let w = x1.saturating_sub(x0).max(1);
+        let s = h.max(w) + 4;
+        let oy = (s - h) / 2;
+        let ox = (s - w) / 2;
+        let mut canvas = vec![0.0f32; s * s];
+        for (&y, &x) in blob.ys.iter().zip(blob.xs.iter()) {
+            let ry = (y as usize - y0) + oy;
+            let rx = (x as usize - x0) + ox;
+            canvas[ry * s + rx] = 1.0;
+        }
+
+        let cy = (s as f32 - 1.0) * 0.5;
+        let cx = (s as f32 - 1.0) * 0.5;
+        let r_max = (h.max(w) as f32) * 0.52;
+        let alpha = 2.0f32;
+        let denom = alpha.exp() - 1.0;
+        let mut out = vec![0.0f32; n_rings * n_sectors];
+
+        for m in 0..n_rings {
+            let u = (m as f32) / ((n_rings.saturating_sub(1)).max(1) as f32);
+            let r_m = r_max * ((alpha * u).exp() - 1.0) / denom;
+            for sec in 0..n_sectors {
+                let theta = 2.0 * PI * (sec as f32) / (n_sectors as f32);
+                let sy = (cy + r_m * theta.sin()).clamp(0.0, (s - 1) as f32);
+                let sx = (cx + r_m * theta.cos()).clamp(0.0, (s - 1) as f32);
+                let iy0 = (sy.floor() as usize).min(s - 1);
+                let iy1 = (iy0 + 1).min(s - 1);
+                let wy = sy - (iy0 as f32);
+                let ix0 = (sx.floor() as usize).min(s - 1);
+                let ix1 = (ix0 + 1).min(s - 1);
+                let wx = sx - (ix0 as f32);
+                let v00 = canvas[iy0 * s + ix0];
+                let v01 = canvas[iy0 * s + ix1];
+                let v10 = canvas[iy1 * s + ix0];
+                let v11 = canvas[iy1 * s + ix1];
+                out[m * n_sectors + sec] = (1.0 - wy) * ((1.0 - wx) * v00 + wx * v01)
+                    + wy * ((1.0 - wx) * v10 + wx * v11);
+            }
+        }
+        out
+    }
+
     pub fn fovea_form(blob: &RetinalBlob, fov: usize) -> Vec<f32> {
         let y0 = *blob.ys.iter().min().unwrap_or(&0) as usize;
         let y1 = (*blob.ys.iter().max().unwrap_or(&0) as usize) + 1;

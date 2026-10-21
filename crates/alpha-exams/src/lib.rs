@@ -31,6 +31,9 @@ pub struct GateReport {
     pub b5_top_down_relief_delta: f32,
     pub b5_polar_action_mode_invariance: f32,
     pub b5_passed: bool,
+    pub b6_logpolar_scale_invariance: f32,
+    pub b6_logpolar_fovea_vs_periph_ratio: f32,
+    pub b6_passed: bool,
     pub s0_v1_selectivity: f32,
     pub s0_a1_abx_acc: f32,
     pub s0_passed: bool,
@@ -306,6 +309,57 @@ pub fn run_b5_quadripartite_insula(org: &mut Organism) -> (f32, f32, f32, bool) 
 
     let passed = posterior_specificity > 0.25 && top_down_relief_delta > 0.03 && polar_invariance > 0.40;
     (posterior_specificity, top_down_relief_delta, polar_invariance, passed)
+}
+
+
+pub fn run_b6_log_polar_retina(org: &mut Organism) -> (f32, f32, bool) {
+    let mut rng = Rng64::new(606);
+    // 1. Test scale invariance of Log-Polar retinal mapping (small vs large object at fixation)
+    let scene_std = render_scene(
+        &[WorldObject { colour_id: 1, shape_id: 2, cy: 64.0, cx: 64.0 }],
+        &mut rng,
+    );
+    let (blobs_std, _) = alpha_organism::sensors::Retina::segment(&scene_std.rgb, scene_std.width, scene_std.height);
+    let lp_a = alpha_organism::sensors::Retina::log_polar_form(&blobs_std[0], 24, 24);
+
+    // Synthesize a 1.6x scaled version of the same blob around its fixation center
+    let mut scaled_blob = blobs_std[0].clone();
+    scaled_blob.ys.clear();
+    scaled_blob.xs.clear();
+    for (&y, &x) in blobs_std[0].ys.iter().zip(blobs_std[0].xs.iter()) {
+        let dy = (y as f32 - blobs_std[0].cy) * 1.6;
+        let dx = (x as f32 - blobs_std[0].cx) * 1.6;
+        for oy in -1..=1 {
+            for ox in -1..=1 {
+                let ny = (64.0 + dy + oy as f32).round().clamp(4.0, 123.0) as u16;
+                let nx = (64.0 + dx + ox as f32).round().clamp(4.0, 123.0) as u16;
+                scaled_blob.ys.push(ny);
+                scaled_blob.xs.push(nx);
+            }
+        }
+    }
+    let lp_b = alpha_organism::sensors::Retina::log_polar_form(&scaled_blob, 24, 24);
+    let scale_cos = dot(&lp_a, &lp_b) / (l2_norm(&lp_a) * l2_norm(&lp_b) + 1e-8);
+
+    // 2. Test Foveola vs Periphery sampling density / acuity ratio during direct gaze fixation
+    let (sheet_foveated, _) = alpha_organism::sensors::Retina::sample_log_polar_foveation(
+        &scene_std.rgb,
+        scene_std.width,
+        scene_std.height,
+        64.0,
+        64.0,
+        12,
+        24,
+        48.0,
+    );
+    // Inner 6 foveal/parafoveal rings (rows 0..6) vs outer 4 peripheral rings (rows 8..12) when object is at fixation (64,64)
+    let foveal_energy: f32 = sheet_foveated[0..(6 * 24)].iter().sum::<f32>() / ((6 * 24) as f32);
+    let periph_energy: f32 = sheet_foveated[(8 * 24)..(12 * 24)].iter().sum::<f32>() / ((4 * 24) as f32);
+    let fov_ratio = foveal_energy / (periph_energy + 1e-4);
+
+    let _ = org.v1_features(&lp_a, false);
+    let passed = scale_cos > 0.88 && fov_ratio > 2.5;
+    (scale_cos, fov_ratio, passed)
 }
 
 pub fn run_s0_senses(org: &mut Organism) -> (f32, f32, bool) {
@@ -608,6 +662,7 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
     let (b3_pos, b3_neg, b3_gain, b3_ok) = run_b3_homeostatic_feelings(&mut org);
     let (b4_acc, b4_ok) = run_b4_feeling_driven_speech(&mut org);
     let (b5_spec, b5_td, b5_inv, b5_ok) = run_b5_quadripartite_insula(&mut org);
+    let (b6_scale, b6_fov, b6_ok) = run_b6_log_polar_retina(&mut org);
 
     let (v1_sel, abx_acc, s0_ok) = run_s0_senses(&mut org);
     let (w_sc, pw_sc, s1_ok) = run_s1_saffran(&mut org);
@@ -657,6 +712,9 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
         b5_top_down_relief_delta: b5_td,
         b5_polar_action_mode_invariance: b5_inv,
         b5_passed: b5_ok,
+        b6_logpolar_scale_invariance: b6_scale,
+        b6_logpolar_fovea_vs_periph_ratio: b6_fov,
+        b6_passed: b6_ok,
         s0_v1_selectivity: v1_sel,
         s0_a1_abx_acc: abx_acc,
         s0_passed: s0_ok,

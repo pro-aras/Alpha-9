@@ -46,6 +46,12 @@ fn main() {
         if r.b5_passed { "PASS" } else { "FAIL" }
     );
     println!(
+        "[B6] Biological Log-Polar Retina (scale_invariance={:.3}, fovea/periphery_acuity={:.2}x): {}",
+        r.b6_logpolar_scale_invariance,
+        r.b6_logpolar_fovea_vs_periph_ratio,
+        if r.b6_passed { "PASS" } else { "FAIL" }
+    );
+    println!(
         "[S0] Senses (V1 selectivity={:.3}, A1 held-out speaker ABX={:.3}): {}",
         r.s0_v1_selectivity,
         r.s0_a1_abx_acc,
@@ -97,6 +103,7 @@ fn main() {
     assert!(r.b3_passed, "B3 homeostatic feelings gate failed");
     assert!(r.b4_passed, "B4 feeling-driven speech gate failed");
     assert!(r.b5_passed, "B5 quadripartite insula gate failed");
+    assert!(r.b6_passed, "B6 biological log-polar retina gate failed");
     assert!(r.s0_passed, "S0 senses gate failed");
     assert!(r.s1_passed, "S1 Saffran segmentation gate failed");
     assert!(r.s2_passed, "S2 cross-situational grounding gate failed");

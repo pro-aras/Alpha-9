@@ -1,4 +1,5 @@
 [package]
+default-run = "alpha-exams"
 name = "alpha-exams"
 version.workspace = true
 edition.workspace = true
