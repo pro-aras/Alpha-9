@@ -429,6 +429,43 @@ impl Organism {
         (pruned, self.discovery.candidates.len())
     }
 
+
+    /// [S4] Grounded Spoken Naming: Given a perceived visual object, recall its bound word-form
+    /// assembly (`stream_mode`: 0=colour, 1=shape, 2=joint), invert to articulatory motor commands,
+    /// and synthesize a real 16 kHz spoken PCM waveform.
+    pub fn speak_object_attribute(&self, obj: &PerceivedObject, stream_mode: u8) -> (Vec<f32>, [f32; 8], Vec<f32>) {
+        let a_word = self.binding.recall_word_assembly(&obj.s, &obj.c, stream_mode);
+        // Project cortical WA assembly back to A1 spectro-temporal word_form space via transpose of WA feedforward weights
+        let in_dim = self.wa.n_in;
+        let mut wf_est = vec![0.0f32; in_dim];
+        for u in 0..self.wa.n_units {
+            let act = a_word[u];
+            if act <= 0.0 {
+                continue;
+            }
+            let row = &self.wa.w_basal[u * in_dim..(u + 1) * in_dim];
+            for (dst, &w) in wf_est.iter_mut().zip(row.iter()) {
+                *dst += act * w;
+            }
+        }
+        normalize_l2_in_place(&mut wf_est);
+        let motor = self.vocal.infer_motor(&wf_est);
+        let pcm = self.vocal.synthesize_pcm(&motor);
+        (a_word, motor, pcm)
+    }
+
+    /// [S5] Two-Word Compositional Speech: Look at a visual object and sequentially articulate
+    /// `[colour_word_pcm, shape_word_pcm]` as a connected two-word 16 kHz audio utterance.
+    pub fn speak_two_word_phrase(&self, obj: &PerceivedObject) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let (a_col, _, pcm_col) = self.speak_object_attribute(obj, 0);
+        let (a_shp, _, pcm_shp) = self.speak_object_attribute(obj, 1);
+        let mut phrase_pcm = Vec::with_capacity(pcm_col.len() + 800 + pcm_shp.len());
+        phrase_pcm.extend_from_slice(&pcm_col);
+        phrase_pcm.resize(pcm_col.len() + 800, 0.0); // 50ms inter-word articulatory pause
+        phrase_pcm.extend_from_slice(&pcm_shp);
+        (a_col, a_shp, phrase_pcm)
+    }
+
     pub fn step(&mut self, frame: &SensoryFrame) -> MotorFrame {
         self.step_count += 1;
         let w = frame.width as usize;

@@ -160,6 +160,41 @@ impl CrossModalBinding {
         }
     }
 
+
+    /// Recall the grounded word-form assembly `a` (dim `n_w`) from a visual shape assembly `s`
+    /// (`stream_mode = 1`), colour assembly `c` (`stream_mode = 0`), or combined (`stream_mode = 2`).
+    pub fn recall_word_assembly(&self, s: &[f32], c: &[f32], stream_mode: u8) -> Vec<f32> {
+        let ds: Vec<f32> = s.iter().zip(self.m_s.iter()).map(|(&x, &m)| x - m).collect();
+        let dc: Vec<f32> = c.iter().zip(self.m_c.iter()).map(|(&x, &m)| x - m).collect();
+        let mut a_hat = vec![0.0f32; self.n_w];
+        for i in 0..self.n_w {
+            let mut val = 0.0f32;
+            if stream_mode == 0 || stream_mode == 2 {
+                let row_c = &self.bc[i * self.n_c..(i + 1) * self.n_c];
+                val += dot(row_c, &dc);
+            }
+            if stream_mode == 1 || stream_mode == 2 {
+                let row_s = &self.bs[i * self.n_s..(i + 1) * self.n_s];
+                val += dot(row_s, &ds);
+            }
+            a_hat[i] = val.max(0.0);
+        }
+        // Snap to nearest discovered lexicon prototype if available
+        if !self.lexicon.is_empty() {
+            let mut best_j = 0usize;
+            let mut best_sc = f32::NEG_INFINITY;
+            for (j, proto) in self.lexicon.iter().enumerate() {
+                let sc = dot(&a_hat, proto) / (l2_norm(&a_hat) * l2_norm(proto) + 1e-8);
+                if sc > best_sc {
+                    best_sc = sc;
+                    best_j = j;
+                }
+            }
+            return self.lexicon[best_j].clone();
+        }
+        a_hat
+    }
+
     pub fn lesion(&mut self) {
         self.bs.fill(0.0);
         self.bc.fill(0.0);

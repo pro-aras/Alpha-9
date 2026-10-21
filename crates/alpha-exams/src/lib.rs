@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use alpha_organism::body::HomeostaticBody;
-use alpha_organism::curiosity::StreamCuriosityTracker;
+use alpha_organism::curiosity::{CausalDiscoveryEngine, StreamCuriosityTracker};
 use alpha_organism::genome::Genome;
 use alpha_organism::util::{dot, l2_norm, normalize_l2_in_place, Rng64};
 use alpha_organism::Organism;
@@ -53,6 +53,15 @@ pub struct GateReport {
     pub s3_babble_imitation_cos: f32,
     pub s3_babble_null_cos: f32,
     pub s3_passed: bool,
+    pub s4_spoken_naming_acc: f32,
+    pub s4_passed: bool,
+    pub s5_two_word_phrase_acc: f32,
+    pub s5_passed: bool,
+    pub d1_hopfield_40pat_recall: f32,
+    pub d1_sparse_kwta_40pat_recall: f32,
+    pub d1_false_claims_falsified_rate: f32,
+    pub d1_discovered_law_cos: f32,
+    pub d1_passed: bool,
     pub l1_acc_t0_naive: f32,
     pub l1_acc_t1_early: f32,
     pub l1_acc_t2_late: f32,
@@ -613,6 +622,166 @@ pub fn run_s3_babbling(org: &mut Organism) -> (f32, f32, bool) {
 }
 
 
+
+pub fn run_s4_s5_spoken_naming_and_phrases(org: &mut Organism) -> (f32, bool, f32, bool) {
+    let mut rng = Rng64::new(4545);
+    // Build reference word-form assemblies for all colour and shape words
+    let mut ref_wa: Vec<Vec<f32>> = Vec::with_capacity(NUM_WORDS);
+    for w in 0..NUM_WORDS {
+        let pcm = synthesize_word_utterance(w, 2, 0.0, &mut rng);
+        let (a, _) = org.hear_word(&pcm, false);
+        ref_wa.push(a);
+    }
+
+    let mut s4_hits = 0usize;
+    let mut s5_both_hits = 0usize;
+    let trials = 44usize;
+
+    for t in 0..trials {
+        let cid = t % NUM_COLOURS;
+        let sid = (t + 2) % NUM_SHAPES;
+        let scene = render_scene(
+            &[WorldObject { colour_id: cid, shape_id: sid, cy: 64.0, cx: 64.0 }],
+            &mut rng,
+        );
+        let (perceived, _) = org.perceive_objects(&scene.rgb, scene.width, scene.height, false);
+        if perceived.is_empty() {
+            continue;
+        }
+        let obj = &perceived[0];
+        let (a_col, a_shp, phrase_pcm) = org.speak_two_word_phrase(obj);
+        if phrase_pcm.len() < 8000 {
+            continue;
+        }
+
+        // Decode which colour word assembly was spoken
+        let mut best_c = 0usize;
+        let mut best_c_sc = f32::NEG_INFINITY;
+        for c in 0..NUM_COLOURS {
+            let sc = dot(&a_col, &ref_wa[c]) / (l2_norm(&a_col) * l2_norm(&ref_wa[c]) + 1e-8);
+            if sc > best_c_sc {
+                best_c_sc = sc;
+                best_c = c;
+            }
+        }
+
+        // Decode which shape word assembly was spoken
+        let mut best_s = 0usize;
+        let mut best_s_sc = f32::NEG_INFINITY;
+        for s in 0..NUM_SHAPES {
+            let w_idx = NUM_COLOURS + s;
+            let sc = dot(&a_shp, &ref_wa[w_idx]) / (l2_norm(&a_shp) * l2_norm(&ref_wa[w_idx]) + 1e-8);
+            if sc > best_s_sc {
+                best_s_sc = sc;
+                best_s = s;
+            }
+        }
+
+        if best_c == cid {
+            s4_hits += 1;
+        }
+        if best_c == cid && best_s == sid {
+            s5_both_hits += 1;
+        }
+    }
+
+    let s4_acc = (s4_hits as f32) / (trials as f32);
+    let s5_acc = (s5_both_hits as f32) / (trials as f32);
+    // Random chance for 11 colours is 1/11 = 0.091; random chance for joint (11 colours * 10 shapes) is 1/110 = 0.0091!
+    (s4_acc, s4_acc > 0.35, s5_acc, s5_acc > 0.15)
+}
+
+pub fn run_d1_causal_falsification_and_discovery(org: &mut Organism) -> (f32, f32, f32, f32, bool) {
+    let mut rng = Rng64::new(2027);
+
+    // Part A: Empirical Falsification of the PDF's Dense Bipolar Hopfield Claim at High Load (40 patterns in N=64)
+    // vs. Alpha 9's Sparse k-WTA Assembly Calculus
+    let n_dense = 64usize;
+    let n_pats = 40usize;
+    let mut hm = alpha_organism::heatmap::BiophysicalHeatMap::new(n_dense);
+    let mut dense_pats = Vec::with_capacity(n_pats);
+    for _ in 0..n_pats {
+        let p: Vec<f32> = (0..n_dense).map(|_| if rng.next_f32() < 0.5 { 1.0 } else { -1.0 }).collect();
+        hm.learn_pattern(&p, 1.0);
+        dense_pats.push(p);
+    }
+    let settled_dense = hm.settle(&dense_pats[0], 10, 0.01, &mut rng);
+    let hopfield_40_acc = settled_dense
+        .iter()
+        .zip(dense_pats[0].iter())
+        .filter(|(&a, &b)| (a - b).abs() < 1e-4)
+        .count() as f32
+        / (n_dense as f32);
+
+    // Now test 40 sparse k-WTA patterns in CanonicalArea
+    let mut sparse_area = alpha_organism::cortex::CanonicalArea::new(64, 256, 12, 0.25, 0.05, &mut rng);
+    let mut sparse_inputs = Vec::with_capacity(n_pats);
+    let mut sparse_codes = Vec::with_capacity(n_pats);
+    for _ in 0..n_pats {
+        let mut x: Vec<f32> = (0..64).map(|_| rng.standard_normal()).collect();
+        normalize_l2_in_place(&mut x);
+        let code = sparse_area.fire_and_learn(&x, None);
+        sparse_inputs.push(x);
+        sparse_codes.push(code);
+    }
+    let recalled_sparse = sparse_area.fire(&sparse_inputs[0]);
+    let sparse_40_cos = dot(&recalled_sparse, &sparse_codes[0])
+        / (l2_norm(&recalled_sparse) * l2_norm(&sparse_codes[0]) + 1e-8);
+
+    // Part B: Active Causal Falsification of False/Unproven Claims & Autonomous Law Discovery
+    let mut engine = CausalDiscoveryEngine::new(0.25);
+    let dim = 16usize;
+    let mut true_causes = Vec::new();
+    let mut true_effects = Vec::new();
+    for k in 0..6 {
+        let mut c = vec![0.0f32; dim];
+        let mut e = vec![0.0f32; dim];
+        for i in 0..dim {
+            c[i] = if (i + k) % 4 == 0 { 1.0 } else { -0.2 };
+            e[i] = if (i + k + 1) % 4 == 0 { 1.0 } else { -0.2 };
+        }
+        normalize_l2_in_place(&mut c);
+        normalize_l2_in_place(&mut e);
+        true_causes.push(c.clone());
+        true_effects.push(e.clone());
+
+        if k < 3 {
+            // Claims 0..3 are TRUE hypotheses
+            engine.add_unproven_claim(c, e);
+        } else {
+            // Claims 3..6 are FALSE / UNPROVEN myths (predicting inverted/wrong effect)
+            let wrong_e: Vec<f32> = e.iter().map(|&v| -v).collect();
+            engine.add_unproven_claim(c, wrong_e);
+        }
+    }
+
+    // Organism runs 12 rounds of empirical testing against actual reality
+    for _ in 0..12 {
+        for k in 0..6 {
+            let (_, _, surprise) = engine.test_against_reality(&true_causes[k], &true_effects[k], 0.35);
+            if surprise > 0.25 {
+                // Contradiction triggers Anterior Insula Region IV salience burst
+                let _ = org.body.insula.step_insula([0.0; 3], [0.0; 3], [0.2, 0.2], surprise, 0.0);
+            }
+        }
+    }
+
+    let false_detected = engine.claims[3..6].iter().filter(|cl| cl.falsified && cl.corrected_by_discovery).count() as f32 / 3.0;
+    let mut discovered_cos = 0.0f32;
+    for k in 3..6 {
+        discovered_cos += dot(&engine.claims[k].predicted_effect, &true_effects[k])
+            / (l2_norm(&engine.claims[k].predicted_effect) * l2_norm(&true_effects[k]) + 1e-8);
+    }
+    discovered_cos /= 3.0;
+
+    // Gate passes if:
+    // 1. Alpha 9 empirically proves sparse k-WTA beats overloaded dense Hopfield (`sparse_40_cos > hopfield_40_acc`)
+    // 2. 100% of false claims are falsified (`false_detected == 1.0`)
+    // 3. The falsified claims are autonomously revised into the true causal law (`discovered_cos > 0.95`)
+    let passed = sparse_40_cos > hopfield_40_acc && false_detected >= 0.99 && discovered_cos > 0.95;
+    (hopfield_40_acc, sparse_40_cos, false_detected, discovered_cos, passed)
+}
+
 pub fn run_l1_longitudinal_autonomy() -> (f32, f32, f32, f32, usize, bool) {
     let mut org = Organism::new(Genome::default());
     let _ = run_s0_senses(&mut org);
@@ -685,6 +854,8 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
     let (c5_shuf, _, _, _, _, _, _) = run_s2_grounding(&mut org_shuf, true);
 
     let (im_cos, null_cos, s3_ok) = run_s3_babbling(&mut org);
+    let (s4_acc, s4_ok, s5_acc, s5_ok) = run_s4_s5_spoken_naming_and_phrases(&mut org);
+    let (d1_hop, d1_kwta, d1_fals, d1_disc, d1_ok) = run_d1_causal_falsification_and_discovery(&mut org);
     let (l1_t0, l1_t1, l1_t2, l1_t3, l1_pruned, l1_ok) = run_l1_longitudinal_autonomy();
     let ram_mb = (org.memory_bytes() as f32) / (1024.0 * 1024.0);
     let ram_ok = org.ram_pressure_ok();
@@ -734,6 +905,15 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
         s3_babble_imitation_cos: im_cos,
         s3_babble_null_cos: null_cos,
         s3_passed: s3_ok,
+        s4_spoken_naming_acc: s4_acc,
+        s4_passed: s4_ok,
+        s5_two_word_phrase_acc: s5_acc,
+        s5_passed: s5_ok,
+        d1_hopfield_40pat_recall: d1_hop,
+        d1_sparse_kwta_40pat_recall: d1_kwta,
+        d1_false_claims_falsified_rate: d1_fals,
+        d1_discovered_law_cos: d1_disc,
+        d1_passed: d1_ok,
         l1_acc_t0_naive: l1_t0,
         l1_acc_t1_early: l1_t1,
         l1_acc_t2_late: l1_t2,

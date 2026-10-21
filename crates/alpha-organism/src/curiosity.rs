@@ -122,3 +122,82 @@ impl DiscoveryArchive {
         }
     }
 }
+
+
+/// Active Causal Falsification & Discovery Engine (`[D1]`):
+/// Tests unproven claims/hypotheses `Cause -> Predicted_Effect` against actual physical reality.
+/// When reality contradicts a claim (`prediction_error > threshold`), the claim is falsified
+/// (`confidence -> 0`), triggers an Insular salience burst, and the organism replaces the false
+/// claim with the empirically observed causal law (`Cause -> Actual_Effect`).
+#[derive(Clone, Debug)]
+pub struct CausalClaim {
+    pub cause: Vec<f32>,
+    pub predicted_effect: Vec<f32>,
+    pub confidence: f32,
+    pub falsified: bool,
+    pub corrected_by_discovery: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CausalDiscoveryEngine {
+    pub claims: Vec<CausalClaim>,
+    pub falsification_thresh: f32,
+}
+
+impl CausalDiscoveryEngine {
+    pub fn new(falsification_thresh: f32) -> Self {
+        Self {
+            claims: Vec::new(),
+            falsification_thresh,
+        }
+    }
+
+    pub fn add_unproven_claim(&mut self, cause: Vec<f32>, predicted_effect: Vec<f32>) {
+        self.claims.push(CausalClaim {
+            cause,
+            predicted_effect,
+            confidence: 0.50,
+            falsified: false,
+            corrected_by_discovery: false,
+        });
+    }
+
+    /// Test all claims matching `observed_cause` against `actual_effect`.
+    /// Returns `(num_verified, num_falsified_and_corrected, max_contradiction_surprise)`.
+    pub fn test_against_reality(&mut self, observed_cause: &[f32], actual_effect: &[f32], eta_revise: f32) -> (usize, usize, f32) {
+        let mut verified = 0usize;
+        let mut corrected = 0usize;
+        let mut max_surprise = 0.0f32;
+
+        for cl in &mut self.claims {
+            let sim_c = dot(&cl.cause, observed_cause) / (l2_norm(&cl.cause) * l2_norm(observed_cause) + 1e-8);
+            if sim_c < 0.80 {
+                continue;
+            }
+            let sim_e = dot(&cl.predicted_effect, actual_effect) / (l2_norm(&cl.predicted_effect) * l2_norm(actual_effect) + 1e-8);
+            let mismatch = 1.0 - sim_e;
+            if mismatch > max_surprise {
+                max_surprise = mismatch;
+            }
+            if mismatch > self.falsification_thresh {
+                // Claim contradicted by physical reality! Falsify and revise toward actual effect.
+                cl.falsified = true;
+                for (p, &act) in cl.predicted_effect.iter_mut().zip(actual_effect.iter()) {
+                    *p += eta_revise * (act - *p);
+                }
+                let new_sim = dot(&cl.predicted_effect, actual_effect) / (l2_norm(&cl.predicted_effect) * l2_norm(actual_effect) + 1e-8);
+                if 1.0 - new_sim <= self.falsification_thresh {
+                    cl.corrected_by_discovery = true;
+                    cl.confidence = 0.95;
+                } else {
+                    cl.confidence = (cl.confidence - 0.25).max(0.0);
+                }
+                corrected += 1;
+            } else {
+                cl.confidence = (cl.confidence + 0.20).min(1.0);
+                verified += 1;
+            }
+        }
+        (verified, corrected, max_surprise)
+    }
+}

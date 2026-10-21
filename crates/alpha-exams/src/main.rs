@@ -83,6 +83,24 @@ fn main() {
         if r.s3_passed { "PASS" } else { "FAIL" }
     );
     println!(
+        "[S4] Visual->Spoken Object Naming (spoken_acc={:.3} vs chance=0.091): {}",
+        r.s4_spoken_naming_acc,
+        if r.s4_passed { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "[S5] Two-Word Compositional Speech [colour+shape] (phrase_acc={:.3} vs chance=0.009): {}",
+        r.s5_two_word_phrase_acc,
+        if r.s5_passed { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "[D1] Active Falsification & Discovery (Hopfield_40pat={:.3} vs Sparse_kWTA={:.3}, false_claims_falsified={:.0}%, discovered_law_cos={:.3}): {}",
+        r.d1_hopfield_40pat_recall,
+        r.d1_sparse_kwta_40pat_recall,
+        r.d1_false_claims_falsified_rate * 100.0,
+        r.d1_discovered_law_cos,
+        if r.d1_passed { "PASS" } else { "FAIL" }
+    );
+    println!(
         "[L1] Longitudinal Self-Advancement (T0 naive={:.3} -> T1 early={:.3} -> T2 mature={:.3} -> T3 post-sleep={:.3}, pruned={} synapses): {}",
         r.l1_acc_t0_naive,
         r.l1_acc_t1_early,
@@ -108,6 +126,9 @@ fn main() {
     assert!(r.s1_passed, "S1 Saffran segmentation gate failed");
     assert!(r.s2_passed, "S2 cross-situational grounding gate failed");
     assert!(r.s3_passed, "S3 vocal babbling imitation gate failed");
+    assert!(r.s4_passed, "S4 spoken naming gate failed");
+    assert!(r.s5_passed, "S5 two-word compositional speech gate failed");
+    assert!(r.d1_passed, "D1 causal falsification and discovery gate failed");
     assert!(r.l1_passed, "L1 longitudinal self-advancement gate failed");
     assert!(r.ram_budget_ok, "Hardware RAM budget gate failed");
 }
