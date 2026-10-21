@@ -358,6 +358,77 @@ impl Organism {
         (m, pcm_out)
     }
 
+
+    /// Autonomous offline sleep consolidation (SWR replay + Generator/Judge dream settling + metabolic pruning).
+    /// Runs with ZERO external sensory input. Returns (pruned_synapses, discovery_archive_count).
+    pub fn sleep_consolidate(&mut self, replay_cycles: usize, prune_thresh: f32) -> (usize, usize) {
+        // 1. Restore cellular ATP and homeostatic energy during slow-wave sleep
+        for a in &mut self.heatmap.atp {
+            *a = (*a + 0.35).clamp(0.0, 1.0);
+        }
+        self.body.state[0] = (self.body.state[0] + 0.20).clamp(0.0, 1.0);
+
+        // 2. Sharp-Wave Ripple (SWR) replay: reactivate discovered lexicon prototypes and sharpen cross-modal bindings
+        let n_lex = self.binding.lexicon.len();
+        if n_lex > 0 {
+            for c in 0..replay_cycles {
+                let idx = c % n_lex;
+                let proto = self.binding.lexicon[idx].clone();
+                let (mut es, mut ec) = self.binding.expectations(&proto);
+                normalize_l2_in_place(&mut es);
+                normalize_l2_in_place(&mut ec);
+                let replay_eta = 0.015;
+                for i in 0..self.genome.wa_units {
+                    let pa = proto[i];
+                    if pa <= 0.0 {
+                        continue;
+                    }
+                    let row_s = &mut self.binding.bs[i * self.genome.it_units..(i + 1) * self.genome.it_units];
+                    for (w, &s_val) in row_s.iter_mut().zip(es.iter()) {
+                        if s_val > 0.05 {
+                            *w += replay_eta * pa * s_val;
+                        }
+                    }
+                    let row_c = &mut self.binding.bc[i * self.genome.c4_units..(i + 1) * self.genome.c4_units];
+                    for (w, &c_val) in row_c.iter_mut().zip(ec.iter()) {
+                        if c_val > 0.05 {
+                            *w += replay_eta * pa * c_val;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Offline dream Generator + Judge on the biophysical cortical sheet
+        let n_hm = self.heatmap.n;
+        let base_cue: Vec<f32> = (0..n_hm)
+            .map(|i| if self.heatmap.s[i] >= 0.0 { 1.0 } else { -1.0 })
+            .collect();
+        for _ in 0..replay_cycles.min(8) {
+            let _ = self.discovery.propose_and_settle(&self.heatmap, &base_cue, 0.25, -0.01, &mut self.rng);
+        }
+
+        // 4. Metabolic synaptic scaling & pruning of weak/noisy cross-modal weights
+        let mut pruned = 0usize;
+        for w in &mut self.binding.bs {
+            if w.abs() > 0.0 && w.abs() < prune_thresh {
+                *w = 0.0;
+                pruned += 1;
+            } else {
+                *w *= 0.98;
+            }
+        }
+        for w in &mut self.binding.bc {
+            if w.abs() > 0.0 && w.abs() < prune_thresh {
+                *w = 0.0;
+                pruned += 1;
+            } else {
+                *w *= 0.98;
+            }
+        }
+        (pruned, self.discovery.candidates.len())
+    }
+
     pub fn step(&mut self, frame: &SensoryFrame) -> MotorFrame {
         self.step_count += 1;
         let w = frame.width as usize;

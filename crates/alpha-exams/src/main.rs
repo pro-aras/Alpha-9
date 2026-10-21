@@ -77,6 +77,15 @@ fn main() {
         if r.s3_passed { "PASS" } else { "FAIL" }
     );
     println!(
+        "[L1] Longitudinal Self-Advancement (T0 naive={:.3} -> T1 early={:.3} -> T2 mature={:.3} -> T3 post-sleep={:.3}, pruned={} synapses): {}",
+        r.l1_acc_t0_naive,
+        r.l1_acc_t1_early,
+        r.l1_acc_t2_late,
+        r.l1_acc_t3_post_sleep,
+        r.l1_pruned_synapses,
+        if r.l1_passed { "PASS" } else { "FAIL" }
+    );
+    println!(
         "[HW] Organism Heap Footprint: {:.2} MB (Budget <= 32.0 MB): {}",
         r.organism_ram_mb,
         if r.ram_budget_ok { "PASS" } else { "FAIL" }
@@ -92,5 +101,6 @@ fn main() {
     assert!(r.s1_passed, "S1 Saffran segmentation gate failed");
     assert!(r.s2_passed, "S2 cross-situational grounding gate failed");
     assert!(r.s3_passed, "S3 vocal babbling imitation gate failed");
+    assert!(r.l1_passed, "L1 longitudinal self-advancement gate failed");
     assert!(r.ram_budget_ok, "Hardware RAM budget gate failed");
 }

@@ -50,6 +50,12 @@ pub struct GateReport {
     pub s3_babble_imitation_cos: f32,
     pub s3_babble_null_cos: f32,
     pub s3_passed: bool,
+    pub l1_acc_t0_naive: f32,
+    pub l1_acc_t1_early: f32,
+    pub l1_acc_t2_late: f32,
+    pub l1_acc_t3_post_sleep: f32,
+    pub l1_pruned_synapses: usize,
+    pub l1_passed: bool,
     pub organism_ram_mb: f32,
     pub ram_budget_ok: bool,
 }
@@ -552,6 +558,47 @@ pub fn run_s3_babbling(org: &mut Organism) -> (f32, f32, bool) {
     (im_cos, null_cos, im_cos > null_cos + 0.05)
 }
 
+
+pub fn run_l1_longitudinal_autonomy() -> (f32, f32, f32, f32, usize, bool) {
+    let mut org = Organism::new(Genome::default());
+    let _ = run_s0_senses(&mut org);
+
+    // T0: Naive newborn evaluation before cross-situational experience
+    let acc_t0 = run_s2_lesion_eval(&mut org);
+
+    // T1: Early autonomous experience (180 episodes with independent random distractors)
+    let mut rng = Rng64::new(909);
+    let positions = [(36.0f32, 36.0f32), (36.0, 92.0), (92.0, 36.0), (92.0, 92.0)];
+    for step in 0..180 {
+        let mut objs = Vec::with_capacity(3);
+        let perm = rng.shuffle_indices(4);
+        let c_perm = rng.shuffle_indices(NUM_COLOURS);
+        let s_perm = rng.shuffle_indices(NUM_SHAPES);
+        for k in 0..3 {
+            let (cy, cx) = positions[perm[k]];
+            objs.push(WorldObject { colour_id: c_perm[k], shape_id: s_perm[k], cy, cx });
+        }
+        let target = &objs[(rng.next_u64() as usize) % objs.len()];
+        let word_id = if (step % 2) == 0 { target.colour_id } else { NUM_COLOURS + target.shape_id };
+        let spk = (rng.next_u64() as usize) % 16;
+        let scene = render_scene(&objs, &mut rng);
+        let pcm = synthesize_word_utterance(word_id, spk, 0.0, &mut rng);
+        let _ = org.body.step_homeostasis_with_cognition(&[0.01, 0.01, 0.02, 0.01], 0.03, 0.25, 0.2);
+        org.experience(&scene.rgb, scene.width, scene.height, &pcm, 3);
+    }
+    let acc_t1 = run_s2_lesion_eval(&mut org);
+
+    // T2: Mature experience (full cross-situational curriculum)
+    let (acc_t2, _, _, _, _, _, _) = run_s2_grounding(&mut org, false);
+
+    // T3: Offline Sleep Consolidation (SWR replay + metabolic pruning with ZERO new world data)
+    let (pruned, _) = org.sleep_consolidate(24, 0.02);
+    let acc_t3 = run_s2_lesion_eval(&mut org);
+
+    let passed = acc_t1 > acc_t0 + 0.10 && acc_t2 >= acc_t1 && acc_t3 >= acc_t2 && pruned > 100;
+    (acc_t0, acc_t1, acc_t2, acc_t3, pruned, passed)
+}
+
 pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
     let (g0_ok, g0_files) = run_g0_anti_cheat(organism_src_dir);
     let mut org = Organism::new(Genome::default());
@@ -583,6 +630,7 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
     let (c5_shuf, _, _, _, _, _, _) = run_s2_grounding(&mut org_shuf, true);
 
     let (im_cos, null_cos, s3_ok) = run_s3_babbling(&mut org);
+    let (l1_t0, l1_t1, l1_t2, l1_t3, l1_pruned, l1_ok) = run_l1_longitudinal_autonomy();
     let ram_mb = (org.memory_bytes() as f32) / (1024.0 * 1024.0);
     let ram_ok = org.ram_pressure_ok();
 
@@ -628,6 +676,12 @@ pub fn run_all_gates(organism_src_dir: &Path) -> GateReport {
         s3_babble_imitation_cos: im_cos,
         s3_babble_null_cos: null_cos,
         s3_passed: s3_ok,
+        l1_acc_t0_naive: l1_t0,
+        l1_acc_t1_early: l1_t1,
+        l1_acc_t2_late: l1_t2,
+        l1_acc_t3_post_sleep: l1_t3,
+        l1_pruned_synapses: l1_pruned,
+        l1_passed: l1_ok,
         organism_ram_mb: ram_mb,
         ram_budget_ok: ram_ok,
     }
