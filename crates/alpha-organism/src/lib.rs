@@ -421,8 +421,8 @@ impl Organism {
         }
         self.body.state[0] = (self.body.state[0] + 0.20).clamp(0.0, 1.0);
 
-        // 2. Replay hippocampal episodic traces into prefrontal-cortical transition matrices
-        self.mind.replay_episodes(0.08);
+        // 2. Consolidate continuous eligibility trace into the recurrent experience chain fabric
+        self.mind.consolidate_chain(0.08);
 
         // 3. Sharp-Wave Ripple (SWR) replay: reactivate discovered lexicon prototypes and sharpen cross-modal bindings
         let n_lex = self.binding.lexicon.len();
@@ -526,39 +526,68 @@ impl Organism {
 
     /// Continuous, open-ended developmental life cycle step:
     /// The ONLY interface between the organism and reality (`SensoryFrame -> MotorFrame`).
-    /// 1. First emits the organism's natural motor reaction (`gaze_xy`, `fixation_blob`, `vocal_tract`,
-    ///    `pcm_out`, `action_drive`) using its existing synaptic state (zero peeking at current frame's learning).
-    /// 2. Then develops all sensory cortices (`V1`, `V4`, `A1`, `IT`, `C4`, `WA`), binds cross-modal
-    ///    associations, updates working-memory comparison & episodic transitions, calibrates vocal motor
-    ///    reafference (`Area Id4`), and triggers slow-wave sleep consolidation if ATP is low.
+    /// Operates as a single coupled dynamical flow without discrete mode switches:
+    /// 1. Visual, auditory, and bodily currents form a unified attention field over the visual room
+    ///    (combining acoustic expectation resonance, ongoing experience-chain flow, and curiosity).
+    /// 2. Vocal tract articulation emerges from the attended experience blended with the organism's
+    ///    personal biographical trace (`chain_deep`) and insular feeling state, self-calibrating via
+    ///    `Area Id4` auditory-motor reafference.
+    /// 3. The unbroken Chain of Experience (`chain_fast -> chain_slow -> chain_deep`) advances and
+    ///    sculpts the recurrent causal fabric (`w_flow`) via continuous eligibility traces.
     pub fn step(&mut self, frame: &SensoryFrame) -> MotorFrame {
         self.step_count += 1;
         let w = frame.width as usize;
         let h = frame.height as usize;
         let mut motor = MotorFrame::default();
 
-        // Phase 1: Natural unforced reaction BEFORE learning from the current frame
         let (objs_now, _) = if !frame.retina_rgb.is_empty() && w > 0 && h > 0 {
             self.perceive_objects(frame.retina_rgb, w, h, false)
         } else {
             (Vec::new(), Vec::new())
         };
 
+        // Compute continuous auditory expectation field (naturally zero when room is silent)
+        let (es, ec, aud_gain) = if !frame.pcm_16khz.is_empty() {
+            let (a_now, _) = self.hear_word(frame.pcm_16khz, false);
+            let (es_v, ec_v) = self.binding.expectations(&a_now);
+            let ns2 = l2_norm(&es_v).powi(2);
+            let nc2 = l2_norm(&ec_v).powi(2);
+            let g = (ns2 + nc2) / (ns2 + nc2 + 1e-4);
+            (es_v, ec_v, g)
+        } else {
+            (vec![0.0; self.genome.it_units], vec![0.0; self.genome.c4_units], 0.0)
+        };
+
+        // Unified continuous attention pull across all objects in the room
         let mut attended_idx = 0usize;
         if !objs_now.is_empty() {
-            if !frame.pcm_16khz.is_empty() {
-                if let Some(choice) = self.attend_to_word(frame.pcm_16khz, &objs_now) {
-                    attended_idx = choice;
-                }
-            } else {
-                // In silence, naturally fixate the most novel/unfamiliar object in view
-                let mut min_fam = f32::INFINITY;
-                for (i, o) in objs_now.iter().enumerate() {
-                    let f = self.binding.object_familiarity(o);
-                    if f < min_fam {
-                        min_fam = f;
-                        attended_idx = i;
-                    }
+            let ns = l2_norm(&es) + 1e-8;
+            let nc = l2_norm(&ec) + 1e-8;
+            let gs = (ns * ns) / (ns * ns + nc * nc + 1e-8);
+            let gc = (nc * nc) / (ns * ns + nc * nc + 1e-8);
+            let mut best_pull = f32::NEG_INFINITY;
+
+            for (i, o) in objs_now.iter().enumerate() {
+                let ds: Vec<f32> = o.s.iter().zip(self.binding.m_s.iter()).map(|(&x, &m)| x - m).collect();
+                let dc: Vec<f32> = o.c.iter().zip(self.binding.m_c.iter()).map(|(&x, &m)| x - m).collect();
+                let cos_s = dot(&es, &ds) / (ns * (l2_norm(&ds) + 1e-8));
+                let cos_c = dot(&ec, &dc) / (nc * (l2_norm(&dc) + 1e-8));
+                let aud_pull = gs * cos_s + gc * cos_c;
+
+                let obj_state = self.mind.encode_multimodal_state(&o.s, &o.c);
+                let flow_res = dot(&obj_state, &self.mind.imagined_flow);
+                let deep_res = dot(&obj_state, &self.mind.chain_deep);
+                let fam_norm = (self.binding.object_familiarity(o)
+                    / (l2_norm(&ds).max(l2_norm(&dc)) + 1e-8))
+                    .clamp(0.0, 1.0);
+                let salience = (l2_norm(&o.c) + l2_norm(&o.s)) * 0.08;
+                let spontaneous_pull =
+                    0.50 * flow_res + 0.35 * deep_res + 0.10 * (1.0 - fam_norm) + 0.05 * salience;
+
+                let total_pull = aud_gain * aud_pull + (1.0 - aud_gain) * spontaneous_pull;
+                if total_pull > best_pull {
+                    best_pull = total_pull;
+                    attended_idx = i;
                 }
             }
             motor.fixation_blob = Some(attended_idx);
@@ -568,15 +597,23 @@ impl Organism {
             ];
         }
 
-        // Natural vocal emission grounded in the attended visual object + self-calibrated vocal tract
+        // Subvocal motor-auditory calibration + natural vocalization shaped by object & experience chain
         self.babble_step(0.08);
         if let Some(att_obj) = objs_now.get(attended_idx) {
-            let (_, m_grounded, pcm_out) = self.speak_object_attribute(att_obj, 0);
+            let (_, mut m_grounded, _) = self.speak_object_attribute(att_obj, 0);
+            // Continuous personal inflection from the organism's lifelong experience chain & insular state
+            for d in 0..8 {
+                let chain_mod = 0.22 * self.mind.chain_deep.get(d * 2).copied().unwrap_or(0.0)
+                    + 0.15 * self.mind.imagined_flow.get(d * 3).copied().unwrap_or(0.0);
+                let feeling_mod = if d % 2 == 0 { 0.12 * self.body.valence } else { 0.12 * (self.body.arousal - 0.2) };
+                m_grounded[d] = (m_grounded[d] + chain_mod + feeling_mod).clamp(0.0, 1.0);
+            }
+            let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
             motor.vocal_tract = m_grounded;
             motor.pcm_out = pcm_out;
         }
 
-        // Phase 2: Endogenous cortical development & cross-modal plasticity from current frame
+        // Endogenous cortical development & cross-modal plasticity from current experience
         let (objs_learned, _) = if !frame.retina_rgb.is_empty() && w > 0 && h > 0 {
             self.perceive_objects(frame.retina_rgb, w, h, true)
         } else {
@@ -592,14 +629,9 @@ impl Organism {
             }
         }
 
-        let prev_wm = self.mind.comparator.wm_trace.clone();
         let mut cortical_summary = vec![0.0f32; 32];
         if let Some(att_obj) = objs_learned.get(attended_idx.min(objs_learned.len().saturating_sub(1))) {
             cortical_summary = self.mind.encode_multimodal_state(&att_obj.s, &att_obj.c);
-            let (_, diff) = self.mind.comparator.compare(&cortical_summary);
-            if diff > 0.10 || self.step_count <= 2 {
-                self.mind.comparator.latch_reference(&cortical_summary);
-            }
         }
 
         // Step cortical attractor heatmap & Quadripartite Insula homeostasis
@@ -613,15 +645,14 @@ impl Organism {
             top_down_reappraisal,
         );
 
-        let action_code = (attended_idx % 6).min(5);
-        self.mind.record_experience(&prev_wm, action_code, &cortical_summary, valence, arousal, 0.12);
+        // Advance the unbroken Chain of Experience (`chain_fast -> chain_slow -> chain_deep`)
+        let flow = self.mind.advance_experience_chain(&cortical_summary, valence, arousal, 0.14);
 
-        // Deliberative action drive + homeostatic need drive
-        let (best_a1, _, _, _) = self.mind.deliberate_solution(&cortical_summary, &prev_wm);
+        // Continuous motor action drive emerging from homeostatic need + recurrent experience wave
         for d in 0..4 {
             let homeo_need = (self.body.set_point[d] - self.body.state[d]).max(0.0);
-            let delib_boost = if best_a1 % 4 == d { 0.15 } else { 0.0 };
-            motor.action_drive[d] = homeo_need + delib_boost;
+            let wave_drive = (flow[d * 4] + flow[16 + d * 4]).max(0.0) * 0.25;
+            motor.action_drive[d] = homeo_need + wave_drive;
         }
 
         if self.body.state[0] < 0.22 {

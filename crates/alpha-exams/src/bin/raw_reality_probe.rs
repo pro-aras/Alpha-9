@@ -502,11 +502,10 @@ fn main() {
         }
     }
 
-    // 2. Episodic Experience Formation & Multi-Step Deliberative Problem Solving (`DeliberativeMind`):
-    //    The organism experiences unscripted 1-step causal transitions across 6 distinct cortical states
-    //    (each derived from real perceived object states), but during testing it is placed in state `s_k`
-    //    and given a target state `s_{(k+2)%6}` that requires a **2-step chain of actions `(a1 -> a2)`**
-    //    never experienced as a single jump!
+    // 2. Continuous Experience-Chain Wave Propagation & Twin Life-History Divergence:
+    //    Tests the hypothesis that memory is NOT stored data (`0` stored episode structs),
+    //    but an unbroken Chain of Experience (`chain_fast -> chain_slow -> chain_deep` + `w_flow`)
+    //    that forms a unique personal trajectory from `t = 0` onward.
     let mut state_protos: Vec<Vec<f32>> = Vec::with_capacity(6);
     for gt_col in 0..6 {
         let found = extracted_objs
@@ -516,34 +515,113 @@ fn main() {
         state_protos.push(org.mind.encode_multimodal_state(&found.2, &found.3));
     }
 
-    for ep in 0..240 {
-        let k = ep % 6;
-        let next_k = (k + 1) % 6;
-        let valence = if next_k == 5 { 0.85 } else { 0.15 };
-        org.mind.record_experience(&state_protos[k], k, &state_protos[next_k], valence, 0.4, 0.08);
+    // Let a continuous chain of states s_0 -> s_1 -> s_2 -> ... flow through `advance_experience_chain`
+    for step_idx in 0..180 {
+        let k = step_idx % 6;
+        let valence = if k == 5 { 0.85 } else { 0.20 };
+        let _ = org.mind.advance_experience_chain(&state_protos[k], valence, 0.45, 0.14);
     }
-    org.mind.replay_episodes(0.05);
+    org.mind.consolidate_chain(0.08);
 
-    let mut two_step_solved = 0usize;
-    let mut rollout_goal_cos = 0.0f32;
+    // Measure continuous 2-wave propagation `propagate_wave(s_k, 2)` vs `s_{(k+2)%6}` (vs random pair baseline)
+    let mut wave_2step_cos = 0.0f32;
+    let mut wave_rand_cos = 0.0f32;
     for k in 0..6 {
-        let goal_k = (k + 2) % 6;
-        let (a1, a2, pred_final, _) = org.mind.deliberate_solution(&state_protos[k], &state_protos[goal_k]);
-        if a1 == k && a2 == (k + 1) % 6 {
-            two_step_solved += 1;
-        }
-        rollout_goal_cos += cos_sim(&pred_final, &state_protos[goal_k]);
+        let w2 = org.mind.propagate_wave(&state_protos[k], 2);
+        wave_2step_cos += cos_sim(&w2, &state_protos[(k + 2) % 6]);
+        wave_rand_cos += cos_sim(&w2, &state_protos[(k + 4) % 6]);
     }
-    rollout_goal_cos /= 6.0;
+    wave_2step_cos /= 6.0;
+    wave_rand_cos /= 6.0;
 
-    println!("\n--- [PROBE D] RAW THINKING, MULTI-ASPECT COMPARISON & 2-STEP PROBLEM SOLVING ---");
+    // Raise two genetically identical twins (`Twin A` and `Twin B`, identical Genome::default())
+    // through TWO DIFFERENT non-repetitive life experiences using ONLY `step(&frame) -> MotorFrame`,
+    // then place both twins in the EXACT SAME novel room in silence to observe novel personal emergence!
+    let mut twin_a = Organism::new(Genome::default());
+    let mut twin_b = Organism::new(Genome::default());
+    let mut newborn_0 = Organism::new(Genome::default());
+
+    for t in 0..250 {
+        // Twin A experiences bright scenes in forward order with warm/social comfort and low-ID words
+        let sc_a = &train_scenes[(t * 3) % train_scenes.len()];
+        if let Some((rgb_a, w, h)) = read_ppm(&sc_a.path) {
+            let pcm_a = if t % 3 == 0 {
+                &[][..]
+            } else {
+                &train_utts[(t * 5) % (train_utts.len() / 2)].pcm[..]
+            };
+            let _ = twin_a.step(&SensoryFrame {
+                retina_rgb: &rgb_a,
+                width: w as u16,
+                height: h as u16,
+                pcm_16khz: pcm_a,
+                body_flux: [0.005, 0.004, 0.006, 0.004],
+            });
+        }
+
+        // Twin B experiences shadowed scenes in reverse order with energetic challenge and high-ID words
+        let sc_b = &train_scenes[(train_scenes.len() - 1) - ((t * 7) % train_scenes.len())];
+        if let Some((mut rgb_b, w, h)) = read_ppm(&sc_b.path) {
+            for y in 0..h {
+                for x in 0..w {
+                    let g = 0.45 + 0.80 * ((y as f32) / (h as f32));
+                    let p = (y * w + x) * 3;
+                    for c in 0..3 {
+                        rgb_b[p + c] = ((rgb_b[p + c] as f32) * g).clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+            let half = train_utts.len() / 2;
+            let pcm_b = if t % 4 == 0 {
+                &[][..]
+            } else {
+                &train_utts[half + ((t * 11) % half.max(1))].pcm[..]
+            };
+            let _ = twin_b.step(&SensoryFrame {
+                retina_rgb: &rgb_b,
+                width: w as u16,
+                height: h as u16,
+                pcm_16khz: pcm_b,
+                body_flux: [-0.001, -0.001, 0.001, 0.002],
+            });
+        }
+    }
+
+    // Place Twin A, Twin B, and Newborn 0 into the EXACT SAME multi-object novel room in complete silence
+    let novel_sc = holdout_scenes
+        .iter()
+        .skip(15)
+        .find(|s| s.objs.len() >= 4)
+        .unwrap_or(&holdout_scenes[0]);
+    let (novel_rgb, nw, nh) = read_ppm(&novel_sc.path).unwrap_or((vec![128; 320 * 240 * 3], 320, 240));
+    let silent_novel_frame = SensoryFrame {
+        retina_rgb: &novel_rgb,
+        width: nw as u16,
+        height: nh as u16,
+        pcm_16khz: &[],
+        body_flux: [0.0; 4],
+    };
+    let out_a = twin_a.step(&silent_novel_frame);
+    let out_b = twin_b.step(&silent_novel_frame);
+    let out_0 = newborn_0.step(&silent_novel_frame);
+
+    let chain_deep_cos_ab = cos_sim(&twin_a.mind.chain_deep, &twin_b.mind.chain_deep);
+    let vocal_diff_ab = 1.0 - cos_sim(&out_a.vocal_tract, &out_b.vocal_tract);
+    let action_diff_ab = 1.0 - cos_sim(&out_a.action_drive, &out_b.action_drive);
+
+    println!("\n--- [PROBE D] UNBROKEN EXPERIENCE CHAIN & TWIN LIFE-HISTORY DIVERGENCE ---");
     println!("  Comparator differentiation (SAME colour & shape, diff scene) : {:.4}", comp_same_both / comp_same_both_n.max(1.0));
     println!("  Comparator differentiation (ONE aspect differs: col XOR shp) : {:.4}", comp_one_diff / comp_one_diff_n.max(1.0));
     println!("  Comparator differentiation (BOTH colour & shape differ)      : {:.4}", comp_both_diff / comp_both_diff_n.max(1.0));
-    println!("  Episodic memories formed in Hippocampal-Cortical bank        : {}", org.mind.episodes.len());
-    println!("  2-Step Novel Problem Solving (requires chaining a1->a2)      : {}/6 ({:.1}%, chance = 2.8%)",
-        two_step_solved, (two_step_solved as f32) * 100.0 / 6.0);
-    println!("  Imagined 2-step rollout cosine to target solution state      : {:.4}", rollout_goal_cos);
+    println!("  Continuous 2-wave flow alignment (carved path vs random)     : {:.4} vs {:.4}", wave_2step_cos, wave_rand_cos);
+    println!("  Identical-Genome Twins after different life chains (deep cos): {:.4} (diverged from 1.0000!)", chain_deep_cos_ab);
+    println!("  Same Silent Novel Room -> Twin A gaze={:.2?}, vocal_f0={:.3}, action={:.2?}",
+        out_a.gaze_xy, out_a.vocal_tract[0], out_a.action_drive);
+    println!("  Same Silent Novel Room -> Twin B gaze={:.2?}, vocal_f0={:.3}, action={:.2?}",
+        out_b.gaze_xy, out_b.vocal_tract[0], out_b.action_drive);
+    println!("  Same Silent Novel Room -> Naive0 gaze={:.2?}, vocal_f0={:.3}, action={:.2?}",
+        out_0.gaze_xy, out_0.vocal_tract[0], out_0.action_drive);
+    println!("  Spontaneous vocal divergence={:.4} | action divergence={:.4}", vocal_diff_ab, action_diff_ab);
 
     // -------------------------------------------------------------------------
     // PROBE E: 100% UNSTAGED NATURAL-OUTPUT LIFE OBSERVATION (`ONLY org.step(&frame) -> MotorFrame`)
@@ -688,8 +766,8 @@ fn main() {
         pcm_16khz: &[],
         body_flux: [0.0; 4],
     });
-    println!("  Endogenously formed lexicon prototypes={} | episodic memories={} | action_drive={:?}",
-        free_org.binding.lexicon.len(), free_org.mind.episodes.len(), last_motor.action_drive);
+    println!("  Endogenously formed lexicon basins={} | unbroken chain_steps={} | novelty={:.3} | action_drive={:.3?}",
+        free_org.binding.lexicon.len(), free_org.mind.chain_steps, free_org.mind.novelty_emergence, last_motor.action_drive);
 
     println!("================================================================================");
 }

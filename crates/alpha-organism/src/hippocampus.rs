@@ -243,7 +243,7 @@ impl CrossModalBinding {
             }
             a_hat[i] = (val * spec).max(0.0);
         }
-        // Snap to nearest discovered lexicon prototype using zero-mean centered cosine
+        // Continuous attractor resonance with discovered lexical basins (rather than hard replacement)
         if !self.lexicon.is_empty() {
             let da_hat: Vec<f32> = a_hat.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
             let na = l2_norm(&da_hat) + 1e-8;
@@ -257,7 +257,20 @@ impl CrossModalBinding {
                     best_j = j;
                 }
             }
-            return self.lexicon[best_j].clone();
+            if best_sc > 0.15 {
+                let mut a_norm = a_hat.clone();
+                let n_raw = l2_norm(&a_norm) + 1e-8;
+                for v in &mut a_norm {
+                    *v /= n_raw;
+                }
+                let proto = &self.lexicon[best_j];
+                let mut blended = vec![0.0f32; self.n_w];
+                let w_attr = best_sc.clamp(0.25, 0.85);
+                for i in 0..self.n_w {
+                    blended[i] = (1.0 - w_attr) * a_norm[i] + w_attr * proto[i];
+                }
+                return blended;
+            }
         }
         a_hat
     }
