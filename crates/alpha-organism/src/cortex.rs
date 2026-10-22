@@ -66,9 +66,10 @@ impl CompetitiveArea {
                 best_u = u;
             }
         }
+        let eff_eta = self.eta / (1.0 + 0.012 * (self.usage[best_u] - 1.0).max(0.0));
         let row = &mut self.w[best_u * self.n_in..(best_u + 1) * self.n_in];
         for (wv, &xv) in row.iter_mut().zip(xn.iter()) {
-            *wv += self.eta * (xv - *wv);
+            *wv += eff_eta * (xv - *wv);
         }
         normalize_l2_in_place(row);
         self.usage[best_u] = 0.999 * self.usage[best_u] + 1.0;
@@ -87,7 +88,10 @@ pub struct CanonicalArea {
     pub beta: f32,
     pub w_basal: Vec<f32>,
     pub w_seq: Vec<f32>,
+    pub mean_in: Vec<f32>,
+    pub step_in: u64,
     pub usage: Vec<f32>,
+    pub maturity: Vec<f32>,
     pub prev_active: Vec<usize>,
     pub last_surprise: f32,
     pub last_regime: DendriticRegime,
@@ -113,7 +117,10 @@ impl CanonicalArea {
             beta,
             w_basal,
             w_seq: vec![0.0f32; n_units * n_units],
+            mean_in: vec![0.0f32; n_in],
+            step_in: 0,
             usage: vec![target_rate; n_units],
+            maturity: vec![0.0f32; n_units],
             prev_active: Vec::new(),
             last_surprise: 0.0,
             last_regime: DendriticRegime::Silent,
@@ -121,11 +128,21 @@ impl CanonicalArea {
     }
 
     pub fn memory_bytes(&self) -> usize {
-        (self.w_basal.capacity() + self.w_seq.capacity() + self.usage.capacity() + self.prev_active.capacity()) * 4
+        (self.w_basal.capacity()
+            + self.w_seq.capacity()
+            + self.mean_in.capacity()
+            + self.usage.capacity()
+            + self.maturity.capacity()
+            + self.prev_active.capacity())
+            * 4
     }
 
-    fn center_and_normalize(x: &[f32]) -> Vec<f32> {
-        let mut xn = x.to_vec();
+    fn adapt_and_center(&self, x: &[f32]) -> Vec<f32> {
+        let mut xn = Vec::with_capacity(self.n_in);
+        for i in 0..self.n_in {
+            let xi = if i < x.len() { x[i] } else { 0.0 };
+            xn.push(xi - self.mean_in[i]);
+        }
         if !xn.is_empty() {
             let mean: f32 = xn.iter().copied().sum::<f32>() / (xn.len() as f32);
             for v in &mut xn {
@@ -137,7 +154,7 @@ impl CanonicalArea {
     }
 
     pub fn fire(&self, x: &[f32]) -> Vec<f32> {
-        let xn = Self::center_and_normalize(x);
+        let xn = self.adapt_and_center(x);
         let mut drive = vec![0.0f32; self.n_units];
         for u in 0..self.n_units {
             let row = &self.w_basal[u * self.n_in..(u + 1) * self.n_in];
@@ -154,13 +171,20 @@ impl CanonicalArea {
     }
 
     pub fn fire_and_learn(&mut self, x: &[f32], apical_pred: Option<&[f32]>) -> Vec<f32> {
-        let xn = Self::center_and_normalize(x);
+        // Update per-afferent synaptic baseline (short-term depression of common-mode background)
+        self.step_in += 1;
+        let alpha_in = (1.0 / (self.step_in as f32)).clamp(0.015, 0.50);
+        for i in 0..self.n_in.min(x.len()) {
+            self.mean_in[i] += alpha_in * (x[i] - self.mean_in[i]);
+        }
+
+        let xn = self.adapt_and_center(x);
         let target_rate = (self.k as f32) / (self.n_units.max(1) as f32);
 
         let mut drive = vec![0.0f32; self.n_units];
         for u in 0..self.n_units {
             let row = &self.w_basal[u * self.n_in..(u + 1) * self.n_in];
-            let homeo_bias = 0.25 * (target_rate - self.usage[u]);
+            let homeo_bias = 0.08 * (target_rate - self.usage[u]);
             drive[u] = dot(row, &xn) + homeo_bias;
         }
         let mut pairs: Vec<(usize, f32)> = drive.into_iter().enumerate().collect();
@@ -175,7 +199,7 @@ impl CanonicalArea {
 
         for u in 0..self.n_units {
             let fired = if a[u] > 0.5 { 1.0 } else { 0.0 };
-            self.usage[u] = 0.98 * self.usage[u] + 0.02 * fired;
+            self.usage[u] = 0.99 * self.usage[u] + 0.01 * fired;
         }
 
         let (gate, regime) = if let Some(pred) = apical_pred {
@@ -199,13 +223,18 @@ impl CanonicalArea {
         self.last_surprise = gate;
         self.last_regime = regime;
 
-        let eff_beta = self.beta * gate;
         for &u in &active_idx {
+            // Perineuronal net (PNN) metaplastic stabilization: uncommitted columns learn fast,
+            // while consolidated columns resist representational drift so downstream hippocampal
+            // bindings remain stable over lifelong open-ended experience.
+            let pnn_scale = 1.0 / (1.0 + 0.08 * self.maturity[u]);
+            let eff_beta = self.beta * gate * pnn_scale;
             let row = &mut self.w_basal[u * self.n_in..(u + 1) * self.n_in];
             for (wv, &xv) in row.iter_mut().zip(xn.iter()) {
                 *wv += eff_beta * (xv - *wv);
             }
             normalize_l2_in_place(row);
+            self.maturity[u] = (self.maturity[u] + 1.0).min(200.0);
         }
 
         if !self.prev_active.is_empty() {

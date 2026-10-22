@@ -46,47 +46,104 @@ impl CrossModalBinding {
         base + lex + self.lex_count.capacity() * 4
     }
 
-    pub fn update_lexicon(&mut self, a: &[f32], k_w: f32) -> (usize, bool) {
+    pub fn update_lexicon(&mut self, a: &[f32], _k_w: f32) -> (usize, bool) {
+        // Compute zero-mean Deviation from running cortical baseline `m_w` to eliminate common-mode cone
+        let da: Vec<f32> = a.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+        let na = l2_norm(&da) + 1e-8;
         if !self.lexicon.is_empty() {
+            let total_cnt: u32 = self.lex_count.iter().sum::<u32>().max(1);
+            let avg_share = 1.0 / (self.lexicon.len().max(1) as f32);
             let mut best_j = 0usize;
             let mut best_ov = f32::NEG_INFINITY;
             for (j, p) in self.lexicon.iter().enumerate() {
-                let ov = dot(a, p) / k_w;
+                let dp: Vec<f32> = p.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+                let np = l2_norm(&dp) + 1e-8;
+                let raw_cos = dot(&da, &dp) / (na * np);
+                // Homeostatic conscience: prevent any single prototype from monopolizing >2x its fair share
+                let share = (self.lex_count[j] as f32) / (total_cnt as f32);
+                let penalty = (share - avg_share).max(0.0) * 0.35;
+                let ov = raw_cos - penalty;
                 if ov > best_ov {
                     best_ov = ov;
                     best_j = j;
                 }
             }
-            if best_ov > self.overlap_thresh {
+            if best_ov > self.overlap_thresh && self.lexicon.len() >= 18 || best_ov > (self.overlap_thresh + 0.18) {
                 self.lex_count[best_j] += 1;
-                let cnt = self.lex_count[best_j] as f32;
+                let eta_p = (1.0 / (self.lex_count[best_j] as f32)).max(0.04);
                 for (pv, &av) in self.lexicon[best_j].iter_mut().zip(a.iter()) {
-                    *pv += (av - *pv) / cnt;
+                    *pv += eta_p * (av - *pv);
                 }
                 return (best_j, false);
             }
         }
-        let j = self.lexicon.len();
-        self.lexicon.push(a.to_vec());
-        self.lex_count.push(1);
-        (j, true)
+        // Open-ended developmental lexicon growth (bounded only by physical RAM safety limit 4096)
+        if self.lexicon.len() < 4096 {
+            let j = self.lexicon.len();
+            self.lexicon.push(a.to_vec());
+            self.lex_count.push(1);
+            return (j, true);
+        }
+        // If at physical RAM safety limit, merge into closest prototype
+        let mut best_j = 0usize;
+        let mut best_ov = f32::NEG_INFINITY;
+        for (j, p) in self.lexicon.iter().enumerate() {
+            let dp: Vec<f32> = p.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+            let ov = dot(&da, &dp) / (na * (l2_norm(&dp) + 1e-8));
+            if ov > best_ov {
+                best_ov = ov;
+                best_j = j;
+            }
+        }
+        self.lex_count[best_j] += 1;
+        for (pv, &av) in self.lexicon[best_j].iter_mut().zip(a.iter()) {
+            *pv += 0.05 * (av - *pv);
+        }
+        (best_j, false)
     }
 
     pub fn expectations(&self, a: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        // Lexical attractor pattern completion: blend incoming assembly `a` with best matching
+        // consolidated prototype in `self.lexicon` if similarity is above threshold
+        let mut a_eff = a.to_vec();
+        if !self.lexicon.is_empty() {
+            let da: Vec<f32> = a.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+            let na = l2_norm(&da) + 1e-8;
+            let mut best_j = 0usize;
+            let mut best_cos = f32::NEG_INFINITY;
+            for (j, p) in self.lexicon.iter().enumerate() {
+                let dp: Vec<f32> = p.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+                let c = dot(&da, &dp) / (na * (l2_norm(&dp) + 1e-8));
+                if c > best_cos {
+                    best_cos = c;
+                    best_j = j;
+                }
+            }
+            if best_cos > 0.20 {
+                let proto = &self.lexicon[best_j];
+                for (av, &pv) in a_eff.iter_mut().zip(proto.iter()) {
+                    *av = 0.65 * (*av) + 0.35 * pv;
+                }
+            }
+        }
+
         let mut es = vec![0.0f32; self.n_s];
         let mut ec = vec![0.0f32; self.n_c];
         for i in 0..self.n_w {
-            let da = a[i] - self.m_w[i];
-            if da.abs() < 1e-6 {
+            // Pre-synaptic glutamate release occurs ONLY on active pre-synaptic neurons (`a_eff[i] > 0.05`),
+            // weighted by synaptic specificity (habituating non-selective hub neurons with high `m_w[i]`).
+            if a_eff[i] <= 0.05 {
                 continue;
             }
+            let spec = (1.0 - 2.2 * self.m_w[i]).max(0.05);
+            let pre_drive = a_eff[i] * spec;
             let row_s = &self.bs[i * self.n_s..(i + 1) * self.n_s];
             for (s_val, &w_val) in es.iter_mut().zip(row_s.iter()) {
-                *s_val += da * w_val;
+                *s_val += pre_drive * w_val;
             }
             let row_c = &self.bc[i * self.n_c..(i + 1) * self.n_c];
             for (c_val, &w_val) in ec.iter_mut().zip(row_c.iter()) {
-                *c_val += da * w_val;
+                *c_val += pre_drive * w_val;
             }
         }
         (es, ec)
@@ -112,7 +169,6 @@ impl CrossModalBinding {
     }
 
     pub fn bind_experience(&mut self, a: &[f32], objs: &[PerceivedObject], order: &[usize], eta: f32, is_novel_word: bool) {
-        let da: Vec<f32> = a.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
         let mut weights = vec![1.0f32; objs.len()];
         if is_novel_word && objs.len() > 1 && self.lexicon.len() >= 4 {
             let fams: Vec<f32> = objs.iter().map(|o| self.object_familiarity(o)).collect();
@@ -129,23 +185,30 @@ impl CrossModalBinding {
             }
         }
 
+        // Normalize per-scene learning rate by number of fixated objects so cluttered scenes
+        // do not inject excess distractor variance into the active word's synapses
+        let scene_scale = 1.0 / ((order.len().max(1) as f32).sqrt());
+
         for &idx in order {
             let o = &objs[idx];
-            let eff_eta = eta * weights[idx];
+            let eff_eta = eta * weights[idx] * scene_scale;
             let ds: Vec<f32> = o.s.iter().zip(self.m_s.iter()).map(|(&x, &m)| x - m).collect();
             let dc: Vec<f32> = o.c.iter().zip(self.m_c.iter()).map(|(&x, &m)| x - m).collect();
             for i in 0..self.n_w {
-                let dai = da[i] * eff_eta;
-                if dai.abs() < 1e-7 {
+                // Pre-synaptically gated BCM rule: silent word neurons (`a[i] == 0`) release zero
+                // glutamate and NEVER suffer cross-word interference when other words are spoken!
+                if a[i] <= 0.05 {
                     continue;
                 }
+                let spec = (1.0 - 2.2 * self.m_w[i]).max(0.05);
+                let pre_lr = a[i] * spec * eff_eta;
                 let row_s = &mut self.bs[i * self.n_s..(i + 1) * self.n_s];
                 for (w_val, &dsv) in row_s.iter_mut().zip(ds.iter()) {
-                    *w_val += dai * dsv;
+                    *w_val += pre_lr * (dsv - 0.02 * (*w_val));
                 }
                 let row_c = &mut self.bc[i * self.n_c..(i + 1) * self.n_c];
                 for (w_val, &dcv) in row_c.iter_mut().zip(dc.iter()) {
-                    *w_val += dai * dcv;
+                    *w_val += pre_lr * (dcv - 0.02 * (*w_val));
                 }
             }
             for (m, &x) in self.m_s.iter_mut().zip(o.s.iter()) {
@@ -168,6 +231,7 @@ impl CrossModalBinding {
         let dc: Vec<f32> = c.iter().zip(self.m_c.iter()).map(|(&x, &m)| x - m).collect();
         let mut a_hat = vec![0.0f32; self.n_w];
         for i in 0..self.n_w {
+            let spec = (1.0 - 2.2 * self.m_w[i]).max(0.05);
             let mut val = 0.0f32;
             if stream_mode == 0 || stream_mode == 2 {
                 let row_c = &self.bc[i * self.n_c..(i + 1) * self.n_c];
@@ -177,14 +241,17 @@ impl CrossModalBinding {
                 let row_s = &self.bs[i * self.n_s..(i + 1) * self.n_s];
                 val += dot(row_s, &ds);
             }
-            a_hat[i] = val.max(0.0);
+            a_hat[i] = (val * spec).max(0.0);
         }
-        // Snap to nearest discovered lexicon prototype if available
+        // Snap to nearest discovered lexicon prototype using zero-mean centered cosine
         if !self.lexicon.is_empty() {
+            let da_hat: Vec<f32> = a_hat.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+            let na = l2_norm(&da_hat) + 1e-8;
             let mut best_j = 0usize;
             let mut best_sc = f32::NEG_INFINITY;
             for (j, proto) in self.lexicon.iter().enumerate() {
-                let sc = dot(&a_hat, proto) / (l2_norm(&a_hat) * l2_norm(proto) + 1e-8);
+                let dp: Vec<f32> = proto.iter().zip(self.m_w.iter()).map(|(&x, &m)| x - m).collect();
+                let sc = dot(&da_hat, &dp) / (na * (l2_norm(&dp) + 1e-8));
                 if sc > best_sc {
                     best_sc = sc;
                     best_j = j;
