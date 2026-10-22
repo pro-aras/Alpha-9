@@ -560,6 +560,7 @@ impl Organism {
 
         // Unified continuous attention pull across all objects in the room
         let mut attended_idx = 0usize;
+        let mut attended_recalled_feeling = 0.0f32;
         if !objs_now.is_empty() {
             let ns = l2_norm(&es) + 1e-8;
             let nc = l2_norm(&ec) + 1e-8;
@@ -577,17 +578,43 @@ impl Organism {
                 let obj_state = self.mind.encode_multimodal_state(&o.s, &o.c);
                 let flow_res = dot(&obj_state, &self.mind.imagined_flow);
                 let deep_res = dot(&obj_state, &self.mind.chain_deep);
+                let (_, cell_feeling) = self
+                    .mind
+                    .extract_cellular_experience(&obj_state, Some(&self.mind.prev_cell_state));
+
+                // Saccadic Inhibition of Return (IoR) across 4-step Superior Colliculus trail
+                // (active when remaining in a familiar/static visual scene so the infant explores all objects!)
+                let ox = o.cx / (w.max(1) as f32);
+                let oy = o.cy / (h.max(1) as f32);
+                let scene_persistence = ((self.mind.comparator.last_similarity - 0.45) * 2.0).clamp(0.0, 1.2);
+                let mut spatial_ior = 0.0f32;
+                for &[tx, ty, strg] in &self.mind.gaze_trail {
+                    let d2 = (ox - tx).powi(2) + (oy - ty).powi(2);
+                    spatial_ior += strg * (-d2 / 0.020).exp();
+                }
+                spatial_ior *= scene_persistence;
+                let hab_fatigue = dot(&obj_state, &self.mind.habituation_trace).max(0.0) * scene_persistence;
+                let ion_explore = 0.07
+                    * self.mind.next_ion_fluctuation(ox + oy + self.mind.chain_deep[0] + (i as f32));
+
                 let fam_norm = (self.binding.object_familiarity(o)
                     / (l2_norm(&ds).max(l2_norm(&dc)) + 1e-8))
                     .clamp(0.0, 1.0);
                 let salience = (l2_norm(&o.c) + l2_norm(&o.s)) * 0.08;
-                let spontaneous_pull =
-                    0.50 * flow_res + 0.35 * deep_res + 0.10 * (1.0 - fam_norm) + 0.05 * salience;
+                let spontaneous_pull = 0.48 * flow_res
+                    + 0.35 * deep_res
+                    + 0.35 * cell_feeling
+                    + 0.10 * (1.0 - fam_norm)
+                    + 0.05 * salience
+                    - 0.48 * spatial_ior
+                    - 0.28 * hab_fatigue
+                    + ion_explore;
 
                 let total_pull = aud_gain * aud_pull + (1.0 - aud_gain) * spontaneous_pull;
                 if total_pull > best_pull {
                     best_pull = total_pull;
                     attended_idx = i;
+                    attended_recalled_feeling = cell_feeling;
                 }
             }
             motor.fixation_blob = Some(attended_idx);
@@ -595,22 +622,14 @@ impl Organism {
                 objs_now[attended_idx].cx / (w.max(1) as f32),
                 objs_now[attended_idx].cy / (h.max(1) as f32),
             ];
-        }
-
-        // Subvocal motor-auditory calibration + natural vocalization shaped by object & experience chain
-        self.babble_step(0.08);
-        if let Some(att_obj) = objs_now.get(attended_idx) {
-            let (_, mut m_grounded, _) = self.speak_object_attribute(att_obj, 0);
-            // Continuous personal inflection from the organism's lifelong experience chain & insular state
-            for d in 0..8 {
-                let chain_mod = 0.22 * self.mind.chain_deep.get(d * 2).copied().unwrap_or(0.0)
-                    + 0.15 * self.mind.imagined_flow.get(d * 3).copied().unwrap_or(0.0);
-                let feeling_mod = if d % 2 == 0 { 0.12 * self.body.valence } else { 0.12 * (self.body.arousal - 0.2) };
-                m_grounded[d] = (m_grounded[d] + chain_mod + feeling_mod).clamp(0.0, 1.0);
+            for k in (1..4).rev() {
+                self.mind.gaze_trail[k] = [
+                    self.mind.gaze_trail[k - 1][0],
+                    self.mind.gaze_trail[k - 1][1],
+                    self.mind.gaze_trail[k - 1][2] * 0.72,
+                ];
             }
-            let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
-            motor.vocal_tract = m_grounded;
-            motor.pcm_out = pcm_out;
+            self.mind.gaze_trail[0] = [motor.gaze_xy[0], motor.gaze_xy[1], 1.0];
         }
 
         // Endogenous cortical development & cross-modal plasticity from current experience
@@ -632,27 +651,99 @@ impl Organism {
         let mut cortical_summary = vec![0.0f32; 32];
         if let Some(att_obj) = objs_learned.get(attended_idx.min(objs_learned.len().saturating_sub(1))) {
             cortical_summary = self.mind.encode_multimodal_state(&att_obj.s, &att_obj.c);
+        } else if objs_now.is_empty() && frame.pcm_16khz.is_empty() {
+            // In a dark, silent room, spontaneous cellular engram replay (dreaming/thinking) ignites!
+            cortical_summary = self.mind.spontaneous_replay_step(0.08);
+        }
+
+        // Whole-body visceral organ cells buffer recurring negative metabolic shocks (allostasis)
+        let mut buffered_flux = frame.body_flux;
+        for d in 0..4 {
+            if buffered_flux[d] < 0.0 {
+                let organ_shield = 0.45 * self.mind.organ_cells[d];
+                buffered_flux[d] *= (1.0 - organ_shield).clamp(0.25, 1.0);
+            }
         }
 
         // Step cortical attractor heatmap & Quadripartite Insula homeostasis
-        let spikes = self.heatmap.step_biophysics(&cortical_summary, 0.03, frame.body_flux[0].max(0.001), &mut self.rng);
+        let spikes = self.heatmap.step_biophysics(&cortical_summary, 0.03, buffered_flux[0].max(0.001), &mut self.rng);
         let spike_frac = (spikes as f32) / (self.heatmap.n.max(1) as f32);
-        let top_down_reappraisal = self.mind.comparator.last_similarity * 0.5;
+        let top_down_reappraisal = (self.mind.comparator.last_similarity * 0.5
+            + 0.35 * attended_recalled_feeling)
+            .clamp(-1.0, 1.0);
         let (valence, arousal) = self.body.step_homeostasis_with_cognition(
-            &frame.body_flux,
+            &buffered_flux,
             spike_frac,
             self.wa.last_surprise,
             top_down_reappraisal,
         );
 
-        // Advance the unbroken Chain of Experience (`chain_fast -> chain_slow -> chain_deep`)
-        let flow = self.mind.advance_experience_chain(&cortical_summary, valence, arousal, 0.14);
+        // Advance the unbroken Chain of Experience + 256 Epigenetic Cells
+        let flow = self.mind.advance_experience_chain(&cortical_summary, valence, arousal, 0.14).to_vec();
 
-        // Continuous motor action drive emerging from homeostatic need + recurrent experience wave
+        // Subvocal motor-auditory calibration + natural vocalization shaped by object,
+        // similarity/difference subspace, muscle cell adaptation, and ion-channel exploration
+        self.babble_step(0.08);
+        if let Some(att_obj) = objs_now.get(attended_idx) {
+            // Choose whether to articulate Colour (0) or Shape (1) based on which subspace
+            // carries stronger differential novelty or resonance in the cellular comparator
+            let shp_diff = l2_norm(&self.mind.last_difference_vec[0..16]);
+            let col_diff = l2_norm(&self.mind.last_difference_vec[16..32]);
+            let attr_kind = if shp_diff > col_diff * 1.15 { 1 } else { 0 };
+            let (_, mut m_grounded, _) = self.speak_object_attribute(att_obj, attr_kind);
+
+            for d in 0..8 {
+                let chain_mod = 0.18 * self.mind.chain_deep.get(d * 2).copied().unwrap_or(0.0)
+                    + 0.12 * flow.get(d * 3).copied().unwrap_or(0.0);
+                let feeling_mod = if d % 2 == 0 {
+                    0.12 * (valence + 0.5 * self.mind.last_recalled_feeling)
+                } else {
+                    0.12 * (arousal - 0.2)
+                };
+                let muscle_tone = 0.08 * (self.mind.muscle_cells[d] - 0.5);
+                let vocal_explore = 0.04
+                    * self.mind.novelty_emergence.clamp(0.1, 1.5)
+                    * self.mind.next_ion_fluctuation((d as f32) + valence);
+                m_grounded[d] = (m_grounded[d] + chain_mod + feeling_mod + muscle_tone + vocal_explore)
+                    .clamp(0.0, 1.0);
+            }
+            let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
+            motor.vocal_tract = m_grounded;
+            motor.pcm_out = pcm_out;
+        } else {
+            // Subvocal murmur during quiet dreaming/replay
+            let mut m_dream = self.mind.muscle_cells;
+            for d in 0..8 {
+                m_dream[d] = (m_dream[d]
+                    + 0.10 * flow.get(d * 4).copied().unwrap_or(0.0)
+                    + 0.03 * self.mind.next_ion_fluctuation(d as f32))
+                .clamp(0.0, 1.0);
+            }
+            motor.vocal_tract = m_dream;
+        }
+
+        // Step whole-body organ and muscle cell intracellular memory
+        self.mind.step_whole_body_cells(&cortical_summary, valence, arousal, &motor.vocal_tract);
+
+        // Continuous motor action drive emerging from homeostatic need + cellular feeling + experience wave:
+        // action_drive[0]: approach/reach (boosted by positive recalled cellular feeling, inhibited by pain recall)
+        // action_drive[1]: withdraw/avoid (boosted by negative recalled cellular feeling / trauma warning!)
+        let recall_feel = if self.mind.last_recalled_feeling.abs() >= attended_recalled_feeling.abs() {
+            self.mind.last_recalled_feeling
+        } else {
+            attended_recalled_feeling
+        };
         for d in 0..4 {
             let homeo_need = (self.body.set_point[d] - self.body.state[d]).max(0.0);
             let wave_drive = (flow[d * 4] + flow[16 + d * 4]).max(0.0) * 0.25;
-            motor.action_drive[d] = homeo_need + wave_drive;
+            let cell_affect = if d == 0 {
+                recall_feel * 0.75
+            } else if d == 1 {
+                (-recall_feel).max(0.0) * 1.15
+            } else {
+                0.0
+            };
+            motor.action_drive[d] = (homeo_need + wave_drive + cell_affect).clamp(0.0, 2.0);
         }
 
         if self.body.state[0] < 0.22 {
