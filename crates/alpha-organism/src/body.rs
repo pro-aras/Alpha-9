@@ -129,6 +129,11 @@ pub struct HomeostaticBody {
     pub valence: f32,
     pub arousal: f32,
     pub basal_drain: f32,
+    /// CellML v2.0 Neurovascular / Astrocyte-Neuron Lactate Shuttle (ANLS) & Adenosine Sleep-Pressure Physiome:
+    pub cbf_flow: f32,
+    pub astrocyte_lactate_mm: f32,
+    pub neuronal_atp_mm: f32,
+    pub extracellular_adenosine_um: f32,
     pub insula: QuadripartiteInsula,
     /// 8 Living Visceral & Insular Organ Cells (4 homeostatic organ systems + 4 insular regions)
     pub organ_cells: [VisceralOrganCell; 8],
@@ -157,6 +162,10 @@ impl Default for HomeostaticBody {
             valence: 0.0,
             arousal: 0.0,
             basal_drain: 0.004,
+            cbf_flow: 1.0,
+            astrocyte_lactate_mm: 1.40,
+            neuronal_atp_mm: 2.35,
+            extracellular_adenosine_um: 0.12,
             insula: QuadripartiteInsula::default(),
             organ_cells,
         }
@@ -174,6 +183,30 @@ impl HomeostaticBody {
         d
     }
 
+    /// Coupled CellML v2.0 Neurovascular CBF + Astrocyte-Neuron Lactate Shuttle (ANLS) + Adenosine ODE step:
+    pub fn step_cellml_physiome(&mut self, spike_fraction: f32, nutrient_glucose_flux: f32) {
+        let neural_work = spike_fraction.clamp(0.0, 1.0);
+        // Neurovascular coupling: cortical spiking dilates arterioles via NO/prostaglandin signaling
+        let target_cbf = (1.0 + 0.85 * neural_work).clamp(0.75, 2.20);
+        self.cbf_flow = 0.82 * self.cbf_flow + 0.18 * target_cbf;
+
+        // Astrocyte glycolysis driven by glutamate uptake + capillary glucose delivery
+        let glucose_in = 0.035 * self.cbf_flow + 0.45 * nutrient_glucose_flux.max(0.0);
+        let anls_shuttle = 0.042 * self.astrocyte_lactate_mm * (0.35 + neural_work);
+        self.astrocyte_lactate_mm = (self.astrocyte_lactate_mm + glucose_in - anls_shuttle).clamp(0.25, 3.20);
+
+        // Mitochondrial oxidative phosphorylation of shuttled lactate vs Na+/K+-ATPase spike pump cost
+        let atp_synth = 0.055 * anls_shuttle * self.cbf_flow;
+        let atp_pump_cost = 0.018 + 0.065 * neural_work;
+        self.neuronal_atp_mm = (self.neuronal_atp_mm + atp_synth - atp_pump_cost).clamp(0.40, 3.00);
+
+        // Basal forebrain extracellular adenosine rises with ATP hydrolysis, clears during quiet rest
+        let ado_prod = 0.024 * neural_work + 0.015 * (2.20 - self.neuronal_atp_mm).max(0.0);
+        let glymphatic_clear = if neural_work < 0.08 { 0.045 } else { 0.014 };
+        self.extracellular_adenosine_um =
+            (self.extracellular_adenosine_um * (1.0 - glymphatic_clear) + ado_prod).clamp(0.05, 2.50);
+    }
+
     pub fn step_homeostasis(&mut self, flux: &[f32; 4], spike_fraction: f32, surprise: f32) -> (f32, f32) {
         self.step_homeostasis_with_cognition(flux, spike_fraction, surprise, 0.0)
     }
@@ -185,46 +218,50 @@ impl HomeostaticBody {
         surprise: f32,
         top_down_reappraisal: f32,
     ) -> (f32, f32) {
-        // Step living visceral organ cells: hungry organ cells feed on matching bodily flux/deficits,
-        // update fullness & variety, form inter-organ co-bonds, and provide allostatic buffering
+        self.step_cellml_physiome(spike_fraction, flux[0]);
+
+        // Step living visceral organ cells via Carandini-Heeger Divisive Receptor Conductance
         let mut active_organs = [0.0f32; 8];
         let mut signal_vec = [0.0f32; 4];
         for k in 0..4 {
             signal_vec[k] = (self.set_point[k] - self.state[k]).max(0.0) + (-flux[k]).max(0.0);
         }
-        let sig_norm = (signal_vec.iter().map(|x| x * x).sum::<f32>()).sqrt() + 1e-6;
-        let sig_unit = [
-            signal_vec[0] / sig_norm,
-            signal_vec[1] / sig_norm,
-            signal_vec[2] / sig_norm,
-            signal_vec[3] / sig_norm,
+        let sig_energy_sq: f32 = signal_vec.iter().map(|x| x * x).sum();
+        let sig_norm = sig_energy_sq.sqrt() + 1e-6;
+        // Divisive normalization across visceral interneuron pool (sigma = 0.08)
+        let div_denom = (0.0064 + sig_energy_sq).sqrt();
+        let sig_div = [
+            signal_vec[0] / div_denom,
+            signal_vec[1] / div_denom,
+            signal_vec[2] / div_denom,
+            signal_vec[3] / div_denom,
         ];
 
         for idx in 0..8 {
             let cell = &mut self.organ_cells[idx];
             cell.fullness = (cell.fullness * 0.65 - 0.04).clamp(0.0, 1.0);
             cell.energy = (cell.energy - 0.002).clamp(0.10, 1.50);
-            let p_norm = (cell.pattern.iter().map(|x| x * x).sum::<f32>()).sqrt() + 1e-6;
-            let sim = (cell.pattern[0] * sig_unit[0]
-                + cell.pattern[1] * sig_unit[1]
-                + cell.pattern[2] * sig_unit[2]
-                + cell.pattern[3] * sig_unit[3])
-                / p_norm;
+            let p_energy_sq: f32 = cell.pattern.iter().map(|x| x * x).sum();
+            let g_conductance = (cell.pattern[0].max(0.0) * sig_div[0]
+                + cell.pattern[1].max(0.0) * sig_div[1]
+                + cell.pattern[2].max(0.0) * sig_div[2]
+                + cell.pattern[3].max(0.0) * sig_div[3])
+                / (p_energy_sq.sqrt() + 1e-6);
             let hunger = (1.0 - 0.55 * cell.fullness).clamp(0.20, 1.0);
-            if sim * hunger > 0.42 && sig_norm > 0.02 {
+            if g_conductance * hunger > 0.40 && sig_norm > 0.02 {
                 let lr = (0.12 * hunger).clamp(0.02, 0.20);
                 let mut diff_sq = 0.0f32;
                 for k in 0..4 {
-                    let err = sig_unit[k] - cell.pattern[k];
+                    let err = sig_div[k] - cell.pattern[k];
                     diff_sq += err * err;
-                    cell.pattern[k] = (1.0 - lr) * cell.pattern[k] + lr * sig_unit[k];
+                    cell.pattern[k] = (1.0 - lr) * cell.pattern[k] + lr * sig_div[k];
                 }
                 cell.variety = 0.90 * cell.variety + 0.10 * diff_sq.sqrt();
                 cell.energy = (cell.energy + 0.08 * sig_norm).clamp(0.10, 1.50);
                 cell.fullness = (cell.fullness + 0.35).clamp(0.0, 1.0);
                 cell.adaptation_shield = (cell.adaptation_shield + 0.03 * cell.energy).clamp(0.05, 0.65);
                 cell.fed_count = cell.fed_count.saturating_add(1);
-                active_organs[idx] = sim * cell.energy;
+                active_organs[idx] = g_conductance * cell.energy;
             } else {
                 cell.adaptation_shield = (cell.adaptation_shield * 0.995).clamp(0.05, 0.65);
             }

@@ -93,7 +93,22 @@ pub unsafe extern "C" fn alpha9_bridge_step_pair(
     }
 
     with_pair(|alpha, comp, prev_a_pcm, prev_c_pcm| {
-        let hear_a: &[f32] = if !ext_pcm.is_empty() { ext_pcm } else { prev_c_pcm.as_slice() };
+        // Bone-conducted vocal-cochlear reafference + peer/room acoustic coupling:
+        let mut mixed_a: Vec<f32> = Vec::new();
+        let hear_a: &[f32] = if !ext_pcm.is_empty() {
+            ext_pcm
+        } else if !prev_c_pcm.is_empty() || !prev_a_pcm.is_empty() {
+            let len = prev_c_pcm.len().max(prev_a_pcm.len());
+            mixed_a.resize(len, 0.0);
+            for i in 0..len {
+                let peer_s = prev_c_pcm.get(i).copied().unwrap_or(0.0);
+                let self_reaff = prev_a_pcm.get(i).copied().unwrap_or(0.0);
+                mixed_a[i] = (0.82 * peer_s + 0.18 * self_reaff).clamp(-1.0, 1.0);
+            }
+            mixed_a.as_slice()
+        } else {
+            &[]
+        };
         let out_a = alpha.step(&SensoryFrame {
             retina_rgb: rgb,
             width,
@@ -102,7 +117,19 @@ pub unsafe extern "C" fn alpha9_bridge_step_pair(
             body_flux: a_flux,
         });
 
-        let hear_c: &[f32] = if !ext_pcm.is_empty() { ext_pcm } else { out_a.pcm_out.as_slice() };
+        let mut mixed_c: Vec<f32> = Vec::new();
+        let hear_c: &[f32] = if !ext_pcm.is_empty() {
+            ext_pcm
+        } else {
+            let len = out_a.pcm_out.len().max(prev_c_pcm.len());
+            mixed_c.resize(len, 0.0);
+            for i in 0..len {
+                let peer_s = out_a.pcm_out.get(i).copied().unwrap_or(0.0);
+                let self_reaff = prev_c_pcm.get(i).copied().unwrap_or(0.0);
+                mixed_c[i] = (0.82 * peer_s + 0.18 * self_reaff).clamp(-1.0, 1.0);
+            }
+            mixed_c.as_slice()
+        };
         let out_c = comp.step(&SensoryFrame {
             retina_rgb: rgb,
             width,
@@ -115,18 +142,22 @@ pub unsafe extern "C" fn alpha9_bridge_step_pair(
         *prev_c_pcm = out_c.pcm_out;
 
         let (stm_a, ltm_a, concepts_a, words_a, meanings_a) = alpha.mind.living_type_counts();
+        let (held_a, commits_a, reverts_a, gen_a) = alpha.mind.provisional_stats();
         let (stm_c, ltm_c, concepts_c, words_c, meanings_c) = comp.mind.living_type_counts();
+        let (held_c, commits_c, reverts_c, gen_c) = comp.mind.provisional_stats();
 
         json_c_ptr(format!(
-            "{{\"alpha\":{{\"step\":{},\"gaze\":[{:.3},{:.3}],\"action\":[{:.3},{:.3},{:.3},{:.3}],\"vocal\":[{:.3},{:.3},{:.3},{:.3}],\"body\":[{:.3},{:.3},{:.3},{:.3}],\"valence\":{:.4},\"distress\":{:.4},\"cells_total\":{},\"born\":{},\"split\":{},\"merged\":{},\"died\":{},\"stm\":{},\"ltm\":{},\"concepts\":{},\"words\":{},\"meanings\":{},\"cheap_steps\":{},\"waking_steps\":{}}},\"companion\":{{\"step\":{},\"gaze\":[{:.3},{:.3}],\"action\":[{:.3},{:.3},{:.3},{:.3}],\"vocal\":[{:.3},{:.3},{:.3},{:.3}],\"body\":[{:.3},{:.3},{:.3},{:.3}],\"valence\":{:.4},\"distress\":{:.4},\"cells_total\":{},\"born\":{},\"split\":{},\"stm\":{},\"ltm\":{},\"concepts\":{},\"words\":{},\"meanings\":{}}}}}",
+            "{{\"alpha\":{{\"step\":{},\"gaze\":[{:.3},{:.3}],\"action\":[{:.3},{:.3},{:.3},{:.3}],\"vocal\":[{:.3},{:.3},{:.3},{:.3}],\"body\":[{:.3},{:.3},{:.3},{:.3}],\"atp_mm\":{:.3},\"adenosine_um\":{:.3},\"valence\":{:.4},\"distress\":{:.4},\"cells_total\":{},\"born\":{},\"split\":{},\"merged\":{},\"died\":{},\"held\":{},\"prov_commits\":{},\"prov_reverts\":{},\"sealed_gen\":{},\"stm\":{},\"ltm\":{},\"concepts\":{},\"words\":{},\"meanings\":{},\"cheap_steps\":{},\"waking_steps\":{}}},\"companion\":{{\"step\":{},\"gaze\":[{:.3},{:.3}],\"action\":[{:.3},{:.3},{:.3},{:.3}],\"vocal\":[{:.3},{:.3},{:.3},{:.3}],\"body\":[{:.3},{:.3},{:.3},{:.3}],\"atp_mm\":{:.3},\"adenosine_um\":{:.3},\"valence\":{:.4},\"distress\":{:.4},\"cells_total\":{},\"born\":{},\"split\":{},\"held\":{},\"prov_commits\":{},\"prov_reverts\":{},\"sealed_gen\":{},\"stm\":{},\"ltm\":{},\"concepts\":{},\"words\":{},\"meanings\":{}}}}}",
             alpha.step_count,
             out_a.gaze_xy[0], out_a.gaze_xy[1],
             out_a.action_drive[0], out_a.action_drive[1], out_a.action_drive[2], out_a.action_drive[3],
             out_a.vocal_tract[0], out_a.vocal_tract[1], out_a.vocal_tract[2], out_a.vocal_tract[3],
             alpha.body.state[0], alpha.body.state[1], alpha.body.state[2], alpha.body.state[3],
+            alpha.body.neuronal_atp_mm, alpha.body.extracellular_adenosine_um,
             alpha.body.valence, alpha.body.distress,
             alpha.mind.cells.len(), alpha.mind.cells_born, alpha.mind.cells_split,
             alpha.mind.cells_merged, alpha.mind.cells_died_handoff,
+            held_a, commits_a, reverts_a, gen_a,
             stm_a, ltm_a, concepts_a, words_a, meanings_a,
             alpha.mind.cheap_cell_steps, alpha.mind.waking_brain_steps,
             comp.step_count,
@@ -134,8 +165,10 @@ pub unsafe extern "C" fn alpha9_bridge_step_pair(
             out_c.action_drive[0], out_c.action_drive[1], out_c.action_drive[2], out_c.action_drive[3],
             out_c.vocal_tract[0], out_c.vocal_tract[1], out_c.vocal_tract[2], out_c.vocal_tract[3],
             comp.body.state[0], comp.body.state[1], comp.body.state[2], comp.body.state[3],
+            comp.body.neuronal_atp_mm, comp.body.extracellular_adenosine_um,
             comp.body.valence, comp.body.distress,
             comp.mind.cells.len(), comp.mind.cells_born, comp.mind.cells_split,
+            held_c, commits_c, reverts_c, gen_c,
             stm_c, ltm_c, concepts_c, words_c, meanings_c
         ))
     })

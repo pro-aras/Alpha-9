@@ -815,7 +815,7 @@ impl Organism {
             rest: if objs_now.is_empty() && frame.pcm_16khz.is_empty() {
                 1.0
             } else {
-                0.0
+                (self.body.extracellular_adenosine_um * 0.35).clamp(0.0, 0.75)
             },
         };
         let cell_readout = self.mind.read_living_cells(
@@ -1011,8 +1011,9 @@ impl Organism {
             );
         }
 
-        if self.body.state[0] < 0.22 {
+        if self.body.state[0] < 0.22 || self.body.extracellular_adenosine_um > 1.85 {
             let _ = self.sleep_consolidate(16, 0.005);
+            self.body.extracellular_adenosine_um *= 0.65;
         }
 
         motor

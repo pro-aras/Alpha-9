@@ -125,9 +125,77 @@ impl CorticalComparator {
     }
 }
 
+/// Homoiconic Epigenetic Regulatory S-Expression (`RegGeneExpr` — Code-as-Data inside every Cell):
+/// Compact 7-node prefix tree (`(op_root (op_left a b) (op_right c d))`) over biophysical signals:
+/// Terminals `0..5`: `[basal_conductance, hunger_drive, energy_atp, vesicle_rrp, somatic_valence, surprise_ca2]`
+/// Combinators `6..9`: `[6=avg_sum, 7=coincidence_mul, 8=hill_saturate, 9=homeostatic_diff]`
+#[derive(Clone, Copy, Debug)]
+pub struct RegGeneExpr {
+    pub ops: [u8; 7],
+}
+
+impl Default for RegGeneExpr {
+    fn default() -> Self {
+        // Canonical biophysical regulatory tree: avg(mul(basal, hunger), hill(energy, vesicle))
+        Self {
+            ops: [6, 7, 8, 0, 1, 2, 3],
+        }
+    }
+}
+
+impl RegGeneExpr {
+    #[inline]
+    fn eval_leaf(op: u8, signals: &[f32; 6]) -> f32 {
+        signals[(op as usize) % 6].clamp(0.0, 2.0)
+    }
+
+    #[inline]
+    fn eval_bin(op: u8, x: f32, y: f32) -> f32 {
+        match op.saturating_sub(6) % 4 {
+            0 => 0.5 * (x + y),
+            1 => (x * y).clamp(0.0, 2.0),
+            2 => {
+                let num = x * x + 0.35 * y;
+                (num / (0.25 + num)).clamp(0.0, 1.5)
+            }
+            _ => (x * (0.65 + 0.35 * (1.0 - (x - y).abs().min(1.0)))).clamp(0.0, 2.0),
+        }
+    }
+
+    /// Evaluate the cell's homoiconic regulatory program in O(1) with zero heap allocations:
+    #[inline]
+    pub fn eval_biophysical(&self, signals: &[f32; 6]) -> f32 {
+        let l0 = Self::eval_leaf(self.ops[3], signals);
+        let l1 = Self::eval_leaf(self.ops[4], signals);
+        let r0 = Self::eval_leaf(self.ops[5], signals);
+        let r1 = Self::eval_leaf(self.ops[6], signals);
+        let left = Self::eval_bin(self.ops[1], l0, l1);
+        let right = Self::eval_bin(self.ops[2], r0, r1);
+        let out = Self::eval_bin(self.ops[0], left, right);
+        if out.is_finite() {
+            (0.72 + 0.32 * out).clamp(0.55, 1.30)
+        } else {
+            1.0
+        }
+    }
+
+    /// Homoiconic subform point-mutation (`patch_subform`, inspired by Lisp `(patch name old new)`):
+    /// Mutates exactly one operator or terminal node while preserving valid S-expression arity.
+    #[inline]
+    pub fn patch_subform(&self, locus_seed: u64) -> Self {
+        let mut child = *self;
+        let slot = (locus_seed as usize) % 7;
+        if slot < 3 {
+            child.ops[slot] = 6 + (((locus_seed >> 3) as u8) % 4);
+        } else {
+            child.ops[slot] = ((locus_seed >> 5) as u8) % 6;
+        }
+        child
+    }
+}
+
 /// Single Living Cell with Multi-Scale Action Eligibility, Self-Supervised Delta, Epigenetics,
-/// and Full Ecological Lifecycle (Hunger/Feeding, Fullness, Mitosis/Splitting, Apoptosis with
-/// Neighbor Handoff, Fusion/Merging, Co-occurrence & Directed Time Bonds, and 3D Neighborhoods):
+/// Homoiconic `RegGeneExpr` + Provisional Escrow Self-Healing, and Full Ecological Lifecycle:
 #[derive(Clone, Debug)]
 pub struct EpigeneticCell {
     pub id: u64,
@@ -153,6 +221,10 @@ pub struct EpigeneticCell {
     pub tag_slow: f32,
     pub erk_nuclear: f32,
     pub vesicle_ready: f32,
+    /// Homoiconic regulatory S-expression + Escrowed parent backup (`provisional_hold`: 0=sealed, 1=held)
+    pub gene_expr: RegGeneExpr,
+    pub escrow_gene: RegGeneExpr,
+    pub provisional_hold: u8,
     pub receptor_w: Vec<f32>,
     pub context_w: Vec<f32>,
     pub axon_out_w: Vec<f32>,
@@ -171,7 +243,7 @@ pub struct EpigeneticCell {
 
 impl EpigeneticCell {
     pub fn memory_bytes(&self) -> usize {
-        220 + (self.receptor_w.capacity()
+        236 + (self.receptor_w.capacity()
             + self.context_w.capacity()
             + self.axon_out_w.capacity()
             + self.world_delta_w.capacity()
@@ -179,6 +251,32 @@ impl EpigeneticCell {
             * 4
             + (self.co_bonds.capacity() + self.time_bonds.capacity()) * 12
             + self.child_ids.capacity() * 8
+    }
+
+    /// Biophysical Dendritic Ionotropic (AMPA) + Voltage-Unblocked NMDA Coincidence Conductance
+    /// normalized by Carandini-Heeger Divisive Pool Energy (replaces unbiological raw cosine lookup):
+    #[inline]
+    pub fn ionotropic_conductance(&self, afferent_cue: &[f32]) -> f32 {
+        let len = self.receptor_w.len().min(afferent_cue.len());
+        if len == 0 {
+            return 0.0;
+        }
+        let mut g_ampa = 0.0f32;
+        let mut r_energy = 0.0f32;
+        let mut c_energy = 0.0f32;
+        for i in 0..len {
+            let rw = self.receptor_w[i];
+            let cv = afferent_cue[i];
+            g_ampa += rw * cv;
+            r_energy += rw * rw;
+            c_energy += cv * cv;
+        }
+        // Carandini-Heeger divisive normalization across dendritic spine pool (sigma^2 = 1e-6)
+        let denom = ((1e-6 + r_energy) * (1e-6 + c_energy)).sqrt();
+        let norm_g = (g_ampa / denom).clamp(-1.0, 1.0);
+        // Presynaptic Readily-Releasable Vesicle Pool (RRP) + PSD-95 chromatin stabilization gain
+        let rrp_gain = (0.95 + 0.05 * self.vesicle_ready).clamp(0.92, 1.02);
+        (norm_g * rrp_gain).clamp(-1.0, 1.0)
     }
 
     pub fn add_or_strengthen_co_bond(&mut self, other_id: u64, delta: f32) {
@@ -238,6 +336,11 @@ pub struct DeliberativeMind {
     pub dream_bridges_formed: u64,
     pub cheap_cell_steps: u64,
     pub waking_brain_steps: u64,
+    /// Locked survival floor (`basal_columns` = `kernel`) vs mutable `evolved` cells + provisional lineage:
+    pub floor_locked: bool,
+    pub provisional_commits: u64,
+    pub provisional_reverts: u64,
+    pub sealed_generation: u64,
     pub prev_cell_state: Vec<f32>,
     pub current_scene_state: Vec<f32>,
     pub transition_context_state: Vec<f32>,
@@ -317,6 +420,9 @@ impl DeliberativeMind {
                 tag_slow: 0.0,
                 erk_nuclear: 0.0,
                 vesicle_ready: 1.0,
+                gene_expr: RegGeneExpr::default(),
+                escrow_gene: RegGeneExpr::default(),
+                provisional_hold: 0,
                 receptor_w,
                 context_w,
                 axon_out_w: vec![0.0; state_dim],
@@ -371,6 +477,9 @@ impl DeliberativeMind {
                 tag_slow: 0.0,
                 erk_nuclear: 0.0,
                 vesicle_ready: 1.0,
+                gene_expr: RegGeneExpr::default(),
+                escrow_gene: RegGeneExpr::default(),
+                provisional_hold: 0,
                 receptor_w: receptor_w.clone(),
                 context_w: receptor_w,
                 axon_out_w: vec![0.0; state_dim],
@@ -412,6 +521,10 @@ impl DeliberativeMind {
             dream_bridges_formed: 0,
             cheap_cell_steps: 0,
             waking_brain_steps: 0,
+            floor_locked: true,
+            provisional_commits: 0,
+            provisional_reverts: 0,
+            sealed_generation: 0,
             prev_cell_state: vec![0.0f32; state_dim],
             current_scene_state: vec![0.0f32; state_dim],
             transition_context_state: vec![0.0f32; state_dim],
@@ -1261,7 +1374,7 @@ impl DeliberativeMind {
                     if let Some(m_vec) = meaning_cue {
                         if l2_norm(m_vec) > 0.05 {
                             has_input_cue = true;
-                            let s = dot(&c.receptor_w, m_vec);
+                            let s = c.ionotropic_conductance(m_vec);
                             if c.tissue_kind == CELL_TISSUE_RETINA_MEANING && s > best_meaning_sim {
                                 best_meaning_sim = s;
                             }
@@ -1275,7 +1388,7 @@ impl DeliberativeMind {
                     if let Some(w_vec) = word_cue {
                         if l2_norm(w_vec) > 0.05 {
                             has_input_cue = true;
-                            let s = dot(&c.receptor_w, w_vec);
+                            let s = c.ionotropic_conductance(w_vec);
                             if s > best_word_sim {
                                 best_word_sim = s;
                             }
@@ -1289,7 +1402,7 @@ impl DeliberativeMind {
                     if let Some(d_vec) = drive_cue {
                         if l2_norm(d_vec) > 0.05 {
                             has_input_cue = true;
-                            let s = dot(&c.receptor_w, d_vec);
+                            let s = c.ionotropic_conductance(d_vec);
                             if s >= c.similarity_limit - 0.15 {
                                 sim = s;
                             }
@@ -1299,7 +1412,15 @@ impl DeliberativeMind {
                 _ => {}
             }
             if sim > 0.0 {
-                raw_excite[idx] = sim * hunger_gate * (0.45 + 0.55 * c.energy);
+                let gene_gain = c.gene_expr.eval_biophysical(&[
+                    sim,
+                    hunger_gate,
+                    c.energy,
+                    c.vesicle_ready,
+                    c.somatic_feeling.abs(),
+                    broadcast.surprise,
+                ]);
+                raw_excite[idx] = sim * hunger_gate * (0.45 + 0.55 * c.energy) * gene_gain;
             }
         }
 
@@ -1560,6 +1681,7 @@ impl DeliberativeMind {
             c.fullness = (c.fullness * 0.62 - 0.04).clamp(0.0, 1.0);
             let eff_decay = c.decay_rate * (1.0 - 0.45 * broadcast.rest);
             c.energy = (c.energy - eff_decay).clamp(0.0, 2.0);
+            c.vesicle_ready = (c.vesicle_ready + 0.07 + 0.10 * broadcast.rest).clamp(0.25, 1.0);
             for (_, w) in &mut c.co_bonds {
                 *w *= 0.995;
             }
@@ -1701,8 +1823,8 @@ impl DeliberativeMind {
             if c.tissue_kind != tissue_kind {
                 continue;
             }
-            let sim = dot(&c.receptor_w, &pat);
-            // Strict similarity limit so distinct words ("ball", "cup", "cat", "dog", "want")
+            let sim = c.ionotropic_conductance(&pat);
+            // Strict receptor conductance limit so distinct acoustic/visual patterns
             // each birth their own living cell instead of swallowing each other!
             if sim >= c.similarity_limit {
                 let hunger = (1.0 - 0.45 * c.fullness).clamp(0.25, 1.0);
@@ -1715,43 +1837,79 @@ impl DeliberativeMind {
         }
 
         if let Some(idx) = best_idx {
-            let c = &mut self.cells[idx];
-            let lr = if c.layer == 0 {
-                (0.26 / (1.0 + 0.12 * (c.fed_count as f32))).clamp(0.05, 0.26)
-            } else {
-                0.04
+            let mut commit_delta = false;
+            let mut revert_delta = false;
+            let cell_id = {
+                let c = &mut self.cells[idx];
+                let gene_gain = c.gene_expr.eval_biophysical(&[
+                    1.0,
+                    (1.0 - 0.45 * c.fullness).clamp(0.25, 1.0),
+                    c.energy,
+                    c.vesicle_ready,
+                    valence.abs(),
+                    0.5,
+                ]);
+                let base_lr = if c.layer == 0 {
+                    (0.26 / (1.0 + 0.12 * (c.fed_count as f32))).clamp(0.05, 0.26)
+                } else {
+                    0.04
+                };
+                let lr = (base_lr * gene_gain).clamp(0.03, 0.30);
+                let mut var_sum = 0.0f32;
+                for d in 0..self.state_dim {
+                    let diff = pat[d] - c.receptor_w[d];
+                    c.variance_w[d] = 0.82 * c.variance_w[d] + 0.18 * (diff * diff);
+                    var_sum += c.variance_w[d];
+                    c.receptor_w[d] += lr * diff;
+                }
+                normalize_l2_in_place(&mut c.receptor_w);
+                c.variety_score = var_sum.sqrt();
+                c.energy = (c.energy + 0.24).clamp(0.10, 1.85);
+                c.fullness = (c.fullness + 0.35).clamp(0.0, 1.0);
+                c.vesicle_ready = (c.vesicle_ready - 0.10).clamp(0.30, 1.0);
+                c.fed_count = c.fed_count.saturating_add(1);
+                c.somatic_feeling = 0.80 * c.somatic_feeling + 0.20 * valence;
+
+                // Provisional-Hold First-Traversal Proof vs Instant Escrow Self-Healing:
+                if c.provisional_hold == 1 && c.fed_count >= 3 {
+                    if valence >= -0.25 && c.energy > 0.15 {
+                        c.provisional_hold = 0;
+                        c.escrow_gene = c.gene_expr;
+                        c.chromatin_locked = (c.chromatin_locked + 0.12).clamp(0.0, 1.0);
+                        commit_delta = true;
+                    } else {
+                        c.gene_expr = c.escrow_gene;
+                        c.provisional_hold = 0;
+                        revert_delta = true;
+                    }
+                }
+
+                if valence >= 0.08 {
+                    for a in 0..4 {
+                        c.motor_action_w[a] = 0.25 * c.motor_action_w[a] + 0.75 * motor_act[a];
+                    }
+                }
+                if tissue_kind == CELL_TISSUE_COCHLEA_WORD {
+                    for v in 0..8 {
+                        c.vocal_motor_w[v] = 0.25 * c.vocal_motor_w[v] + 0.75 * vocal_act[v];
+                    }
+                }
+
+                if c.layer == 0 && c.fed_count >= 5 && c.energy >= 0.90 {
+                    c.layer = 1;
+                    c.decay_rate = 0.0020;
+                    c.similarity_limit = (c.similarity_limit + 0.02).clamp(0.68, 0.90);
+                }
+                c.id
             };
-            let mut var_sum = 0.0f32;
-            for d in 0..self.state_dim {
-                let diff = pat[d] - c.receptor_w[d];
-                c.variance_w[d] = 0.82 * c.variance_w[d] + 0.18 * (diff * diff);
-                var_sum += c.variance_w[d];
-                c.receptor_w[d] += lr * diff;
+            if commit_delta {
+                self.provisional_commits += 1;
+                self.sealed_generation += 1;
             }
-            normalize_l2_in_place(&mut c.receptor_w);
-            c.variety_score = var_sum.sqrt();
-            c.energy = (c.energy + 0.24).clamp(0.10, 1.85);
-            c.fullness = (c.fullness + 0.35).clamp(0.0, 1.0);
-            c.fed_count = c.fed_count.saturating_add(1);
-            c.somatic_feeling = 0.80 * c.somatic_feeling + 0.20 * valence;
-
-            if valence >= 0.08 {
-                for a in 0..4 {
-                    c.motor_action_w[a] = 0.25 * c.motor_action_w[a] + 0.75 * motor_act[a];
-                }
+            if revert_delta {
+                self.provisional_reverts += 1;
             }
-            if tissue_kind == CELL_TISSUE_COCHLEA_WORD {
-                for v in 0..8 {
-                    c.vocal_motor_w[v] = 0.25 * c.vocal_motor_w[v] + 0.75 * vocal_act[v];
-                }
-            }
-
-            if c.layer == 0 && c.fed_count >= 5 && c.energy >= 0.90 {
-                c.layer = 1;
-                c.decay_rate = 0.0020;
-                c.similarity_limit = (c.similarity_limit + 0.02).clamp(0.68, 0.90);
-            }
-            return (c.id, false);
+            return (cell_id, false);
         }
 
         // Birth (Neurogenesis) of a new living `EpigeneticCell`
@@ -1790,6 +1948,9 @@ impl DeliberativeMind {
             tag_slow: 0.2,
             erk_nuclear: 0.2,
             vesicle_ready: 1.0,
+            gene_expr: RegGeneExpr::default(),
+            escrow_gene: RegGeneExpr::default(),
+            provisional_hold: 0,
             receptor_w: pat.clone(),
             context_w: pat,
             axon_out_w: vec![0.0; self.state_dim],
@@ -1845,6 +2006,7 @@ impl DeliberativeMind {
         self.cells_split += 1;
 
         let parent = self.cells[p_idx].clone();
+        let standing_on_stack = self.prev_active_cell_ids.iter().any(|&id| id == parent.id);
         let mut pat_a = parent.receptor_w.clone();
         let mut pat_b = parent.receptor_w.clone();
         for d in 0..self.state_dim {
@@ -1867,6 +2029,13 @@ impl DeliberativeMind {
         self.cells[p_idx].child_ids.push(id_b);
         self.cells[p_idx].add_or_strengthen_co_bond(id_a, 0.95);
         self.cells[p_idx].add_or_strengthen_co_bond(id_b, 0.95);
+        if standing_on_stack {
+            self.cells[p_idx].escrow_gene = parent.gene_expr;
+            self.cells[p_idx].provisional_hold = 1;
+        }
+
+        let gene_a = parent.gene_expr.patch_subform(id_a.wrapping_mul(0x9E37_79B9));
+        let gene_b = parent.gene_expr.patch_subform(id_b.wrapping_mul(0xBF58_476D));
 
         let mut child_a = EpigeneticCell {
             id: id_a,
@@ -1891,6 +2060,9 @@ impl DeliberativeMind {
             tag_slow: 0.2,
             erk_nuclear: 0.2,
             vesicle_ready: 1.0,
+            gene_expr: gene_a,
+            escrow_gene: parent.gene_expr,
+            provisional_hold: 1,
             receptor_w: pat_a.clone(),
             context_w: pat_a,
             axon_out_w: parent.axon_out_w.clone(),
@@ -1907,6 +2079,9 @@ impl DeliberativeMind {
 
         let mut child_b = child_a.clone();
         child_b.id = id_b;
+        child_b.gene_expr = gene_b;
+        child_b.escrow_gene = parent.gene_expr;
+        child_b.provisional_hold = 1;
         child_b.receptor_w = pat_b.clone();
         child_b.context_w = pat_b;
         child_b.pos = [parent.pos[0] + 0.08, parent.pos[1] - 0.06, parent.pos[2]];
@@ -1998,6 +2173,9 @@ impl DeliberativeMind {
                     tag_slow: 0.3,
                     erk_nuclear: 0.3,
                     vesicle_ready: 1.0,
+                    gene_expr: RegGeneExpr::default(),
+                    escrow_gene: RegGeneExpr::default(),
+                    provisional_hold: 0,
                     receptor_w: centroid_pat.clone(),
                     context_w: centroid_pat,
                     axon_out_w: vec![0.0; self.state_dim],
@@ -2059,7 +2237,11 @@ impl DeliberativeMind {
     }
 
     fn reap_starved_cells_with_handoff(&mut self) {
-        let start = self.basal_columns.min(self.cells.len());
+        let start = if self.floor_locked {
+            self.basal_columns.min(self.cells.len())
+        } else {
+            0
+        };
         if self.cells.len() <= start + 6 {
             return;
         }
@@ -2085,6 +2267,9 @@ impl DeliberativeMind {
         };
         let dying = self.cells.remove(d_idx);
         self.cells_died_handoff += 1;
+        if dying.provisional_hold == 1 {
+            self.provisional_reverts += 1;
+        }
 
         let mut best_neighbor_id: Option<u64> = dying
             .co_bonds
@@ -2237,5 +2422,21 @@ impl DeliberativeMind {
         let co: usize = self.cells.iter().skip(start).map(|c| c.co_bonds.len()).sum();
         let tm: usize = self.cells.iter().skip(start).map(|c| c.time_bonds.len()).sum();
         (co, tm)
+    }
+
+    pub fn provisional_stats(&self) -> (usize, u64, u64, u64) {
+        let start = self.basal_columns.min(self.cells.len());
+        let held = self
+            .cells
+            .iter()
+            .skip(start)
+            .filter(|c| c.provisional_hold == 1)
+            .count();
+        (
+            held,
+            self.provisional_commits,
+            self.provisional_reverts,
+            self.sealed_generation,
+        )
     }
 }
