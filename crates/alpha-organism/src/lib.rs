@@ -15,7 +15,7 @@ pub mod vocal;
 
 use alpha_iface::{MotorFrame, SensoryFrame};
 use body::HomeostaticBody;
-use cognition::DeliberativeMind;
+use cognition::{DeliberativeMind, ModulationBroadcast};
 use cortex::{CanonicalArea, CompetitiveArea};
 use curiosity::DiscoveryArchive;
 use forward_speech::FeelingSpeechEngine;
@@ -368,6 +368,15 @@ impl Organism {
         let gs = ns2 / (ns2 + nc2 + 1e-8);
         let gc = nc2 / (ns2 + nc2 + 1e-8);
 
+        let aud_q = self.mind.encode_auditory_state(&a);
+        let q_read = self.mind.read_living_cells(
+            None,
+            Some(&aud_q),
+            None,
+            ModulationBroadcast::default(),
+        );
+        let has_cell_meaning = l2_norm(&q_read.recalled_meaning) > 0.10;
+
         let mut best_i = 0usize;
         let mut best_sc = f32::NEG_INFINITY;
         for (i, o) in objs.iter().enumerate() {
@@ -377,7 +386,12 @@ impl Organism {
             let ndc = l2_norm(&dc) + 1e-8;
             let cos_s = dot(&es, &ds) / (ns * nds);
             let cos_c = dot(&ec, &dc) / (nc * ndc);
-            let sc = gs * cos_s + gc * cos_c;
+            let mut sc = gs * cos_s + gc * cos_c;
+            if has_cell_meaning {
+                let obj_state = self.mind.encode_multimodal_state(&o.s, &o.c);
+                let cell_m_cos = dot(&obj_state, &q_read.recalled_meaning);
+                sc = 0.35 * sc + 0.65 * cell_m_cos;
+            }
             if sc > best_sc {
                 best_sc = sc;
                 best_i = i;
@@ -426,7 +440,9 @@ impl Organism {
         self.body.distress_prev = self.body.distress;
 
         // 2. Consolidate continuous eligibility trace into the recurrent experience chain fabric
+        //    and run offline Dreaming across the Living Epigenetic Cell population
         self.mind.consolidate_chain(0.08);
+        let _ = self.mind.dream_living_cells(replay_cycles.max(4));
 
         // 3. Sharp-Wave Ripple (SWR) replay: reactivate discovered lexicon prototypes and sharpen cross-modal bindings
         let n_lex = self.binding.lexicon.len();
@@ -505,9 +521,6 @@ impl Organism {
                 *dst += act * w;
             }
         }
-        for (dst, &m) in wf_est.iter_mut().zip(self.wa.mean_in.iter()) {
-            *dst = (*dst + m).max(0.0);
-        }
         normalize_l2_in_place(&mut wf_est);
         self.vocal.infer_motor(&wf_est)
     }
@@ -556,16 +569,53 @@ impl Organism {
             (Vec::new(), Vec::new())
         };
 
+        // Compute internal homeostatic drive vector (`drive_vec_opt`) when bodily needs are active
+        let mut max_deficit = 0.0f32;
+        let mut deficits = [0.0f32; 4];
+        for k in 0..4 {
+            deficits[k] = (self.body.set_point[k] - self.body.state[k]).max(0.0);
+            if frame.body_flux[k] < -0.05 {
+                deficits[k] = (deficits[k] - frame.body_flux[k]).min(1.0);
+            }
+            if deficits[k] > max_deficit {
+                max_deficit = deficits[k];
+            }
+        }
+        let drive_vec_opt: Option<Vec<f32>> = if max_deficit > 0.16 {
+            let mut dv = vec![0.0f32; 32];
+            for d in 0..32 {
+                let sign = if (d / 4) % 2 == 0 { 1.0 } else { -1.0 };
+                dv[d] = deficits[d % 4] * sign * (1.0 + 0.25 * ((d % 7) as f32));
+            }
+            normalize_l2_in_place(&mut dv);
+            Some(dv)
+        } else {
+            None
+        };
+
         // Compute continuous auditory expectation field (naturally zero when room is silent)
-        let (es, ec, aud_gain) = if !frame.pcm_16khz.is_empty() {
+        // plus Channel-2 Living Cell Organ word->meaning lookup when a word is heard
+        let (es, ec, aud_gain, cell_word_meaning) = if !frame.pcm_16khz.is_empty() {
             let (a_now, _) = self.hear_word(frame.pcm_16khz, false);
             let (es_v, ec_v) = self.binding.expectations(&a_now);
             let ns2 = l2_norm(&es_v).powi(2);
             let nc2 = l2_norm(&ec_v).powi(2);
             let g = (ns2 + nc2) / (ns2 + nc2 + 1e-4);
-            (es_v, ec_v, g)
+            let aud_q = self.mind.encode_auditory_state(&a_now);
+            let q_read = self.mind.read_living_cells(
+                None,
+                Some(&aud_q),
+                None,
+                ModulationBroadcast::default(),
+            );
+            (es_v, ec_v, g, q_read.recalled_meaning)
         } else {
-            (vec![0.0; self.genome.it_units], vec![0.0; self.genome.c4_units], 0.0)
+            (
+                vec![0.0; self.genome.it_units],
+                vec![0.0; self.genome.c4_units],
+                0.0,
+                vec![0.0; 32],
+            )
         };
 
         // Unified continuous attention pull across all objects in the room
@@ -576,6 +626,7 @@ impl Organism {
             let nc = l2_norm(&ec) + 1e-8;
             let gs = (ns * ns) / (ns * ns + nc * nc + 1e-8);
             let gc = (nc * nc) / (ns * ns + nc * nc + 1e-8);
+            let has_cell_meaning = l2_norm(&cell_word_meaning) > 0.10;
             let mut best_pull = f32::NEG_INFINITY;
 
             for (i, o) in objs_now.iter().enumerate() {
@@ -583,9 +634,13 @@ impl Organism {
                 let dc: Vec<f32> = o.c.iter().zip(self.binding.m_c.iter()).map(|(&x, &m)| x - m).collect();
                 let cos_s = dot(&es, &ds) / (ns * (l2_norm(&ds) + 1e-8));
                 let cos_c = dot(&ec, &dc) / (nc * (l2_norm(&dc) + 1e-8));
-                let aud_pull = gs * cos_s + gc * cos_c;
+                let mut aud_pull = gs * cos_s + gc * cos_c;
 
                 let obj_state = self.mind.encode_multimodal_state(&o.s, &o.c);
+                if has_cell_meaning {
+                    let cell_m_cos = dot(&obj_state, &cell_word_meaning);
+                    aud_pull = 0.65 * aud_pull + 0.35 * cell_m_cos;
+                }
                 let flow_res = dot(&obj_state, &self.mind.imagined_flow);
                 let deep_res = dot(&obj_state, &self.mind.chain_deep);
                 let (_, cell_feeling) = self
@@ -650,15 +705,39 @@ impl Organism {
         };
 
         let mut heard_assembly: Vec<f32> = Vec::new();
+        let mut stream_heard: Vec<(Vec<f32>, bool)> = Vec::new();
         if !frame.pcm_16khz.is_empty() {
-            let (a_heard, is_novel) = self.hear_word(frame.pcm_16khz, true);
-            if !objs_learned.is_empty() {
-                let perm = self.rng.shuffle_indices(objs_learned.len());
-                let eff_eta = self.body.emotional_lr(self.genome.eta_bind);
-                self.binding.bind_experience(&a_heard, &objs_learned, &perm, eff_eta, is_novel);
+            if frame.pcm_16khz.len() >= 11000 {
+                stream_heard = self.hear_stream(frame.pcm_16khz, true);
             }
-            heard_assembly = a_heard;
+            if stream_heard.len() >= 2 {
+                let last_w = stream_heard.last().map(|x| x.0.clone()).unwrap_or_default();
+                if !objs_learned.is_empty() && !last_w.is_empty() {
+                    let perm = self.rng.shuffle_indices(objs_learned.len());
+                    let eff_eta = self.body.emotional_lr(self.genome.eta_bind);
+                    self.binding.bind_experience(&last_w, &objs_learned, &perm, eff_eta, false);
+                }
+                heard_assembly = last_w;
+            } else {
+                let (a_heard, is_novel) = self.hear_word(frame.pcm_16khz, true);
+                if !objs_learned.is_empty() {
+                    let perm = self.rng.shuffle_indices(objs_learned.len());
+                    let eff_eta = self.body.emotional_lr(self.genome.eta_bind);
+                    self.binding.bind_experience(&a_heard, &objs_learned, &perm, eff_eta, is_novel);
+                }
+                heard_assembly = a_heard;
+            }
         }
+
+        let attended_vis_state: Option<Vec<f32>> = objs_now
+            .get(attended_idx)
+            .or_else(|| objs_now.first())
+            .map(|o| self.mind.encode_multimodal_state(&o.s, &o.c));
+        let single_aud_vec: Option<Vec<f32>> = if !heard_assembly.is_empty() {
+            Some(self.mind.encode_auditory_state(&heard_assembly))
+        } else {
+            None
+        };
 
         let mut cortical_summary = vec![0.0f32; 32];
         if !objs_learned.is_empty() {
@@ -718,8 +797,42 @@ impl Organism {
         // Advance the unbroken Chain of Experience + 256 Epigenetic Cells
         let flow = self.mind.advance_experience_chain(&cortical_summary, valence, arousal, 0.14).to_vec();
 
-        // Subvocal motor-auditory calibration + natural vocalization shaped by object,
-        // conversational speech input, similarity/difference subspace, and muscle cell adaptation
+        // Channel 2 + 3 + 4: Read from the Living Cell Population Organ & check if Waking Brain is needed
+        let aud_surprise_now = if !frame.pcm_16khz.is_empty() {
+            self.wa.last_surprise
+        } else {
+            0.0
+        };
+        let vis_surprise_now = if !objs_now.is_empty() {
+            (1.0 - self.mind.comparator.last_similarity.clamp(0.0, 1.0)) * 0.5
+        } else {
+            0.0
+        };
+        let broadcast = ModulationBroadcast {
+            surprise: vis_surprise_now.max(aud_surprise_now),
+            reward: valence.max(0.0),
+            danger: (-valence).max(0.0),
+            rest: if objs_now.is_empty() && frame.pcm_16khz.is_empty() {
+                1.0
+            } else {
+                0.0
+            },
+        };
+        let cell_readout = self.mind.read_living_cells(
+            attended_vis_state.as_deref(),
+            single_aud_vec.as_deref(),
+            drive_vec_opt.as_deref(),
+            broadcast,
+        );
+        // When the Living Cells handle a familiar input cheaply (`!brain_woke_up`), refund cortical ATP
+        if !cell_readout.report.brain_woke_up {
+            for a in &mut self.heatmap.atp {
+                *a = (*a + 0.0015).clamp(0.0, 1.0);
+            }
+        }
+
+        // Subvocal motor-auditory calibration + natural vocalization shaped by Living Epigenetic Cells,
+        // object perception, conversational speech input, similarity/difference subspace, and muscle cells
         self.babble_step(0.08);
         if let Some(att_obj) = objs_now.get(attended_idx) {
             let shp_diff = l2_norm(&self.mind.last_difference_vec[0..16]);
@@ -727,24 +840,57 @@ impl Organism {
             let attr_kind = if shp_diff > col_diff * 1.15 { 1 } else { 0 };
             let (_, mut m_grounded, _) = self.speak_object_attribute(att_obj, attr_kind);
 
-            for d in 0..8 {
-                let chain_mod = 0.18 * self.mind.chain_deep.get(d * 2).copied().unwrap_or(0.0)
-                    + 0.12 * flow.get(d * 3).copied().unwrap_or(0.0);
-                let feeling_mod = if d % 2 == 0 {
-                    0.12 * (valence + 0.5 * self.mind.last_recalled_feeling)
-                } else {
-                    0.12 * (arousal - 0.2)
-                };
-                let muscle_tone = 0.08 * (self.mind.muscle_cells[d] - 0.5);
-                let vocal_explore = 0.04
-                    * self.mind.novelty_emergence.clamp(0.1, 1.5)
-                    * self.mind.next_ion_fluctuation((d as f32) + valence);
-                m_grounded[d] = (m_grounded[d] + chain_mod + feeling_mod + muscle_tone + vocal_explore)
-                    .clamp(0.0, 1.0);
+            if frame.pcm_16khz.is_empty()
+                && drive_vec_opt.is_some()
+                && self.body.state[0] < 0.40
+                && cell_readout.second_word_vocal.is_some()
+            {
+                // Stage 4 Emergent Two-Word Combination (e.g. Drive Word -> Object Word):
+                // Two word cells lit up simultaneously and were ordered by directed `time_bonds` + `fullness`!
+                let m1 = cell_readout.recalled_vocal;
+                let m2_cell = cell_readout.second_word_vocal.unwrap_or(m1);
+                let mut m2 = [0.0f32; 8];
+                for d in 0..8 {
+                    m2[d] = (0.88 * m2_cell[d] + 0.12 * m_grounded[d]).clamp(0.0, 1.0);
+                }
+                let pcm1 = self.vocal.synthesize_pcm(&m1);
+                let pcm2 = self.vocal.synthesize_pcm(&m2);
+                let mut phrase_pcm = Vec::with_capacity(pcm1.len() + 800 + pcm2.len());
+                phrase_pcm.extend_from_slice(&pcm1);
+                phrase_pcm.resize(pcm1.len() + 800, 0.0);
+                phrase_pcm.extend_from_slice(&pcm2);
+                motor.vocal_tract = m1;
+                motor.pcm_out = phrase_pcm;
+            } else {
+                let has_cell_word = frame.pcm_16khz.is_empty() && l2_norm(&cell_readout.recalled_word_pat) > 0.15;
+
+                for d in 0..8 {
+                    let mod_scale = if has_cell_word { 0.15 } else { 1.0 };
+                    let base_m = if has_cell_word {
+                        0.88 * cell_readout.recalled_vocal[d] + 0.12 * m_grounded[d]
+                    } else {
+                        m_grounded[d]
+                    };
+                    let chain_mod = (0.14 * self.mind.chain_deep.get(d * 2).copied().unwrap_or(0.0)
+                        + 0.10 * flow.get(d * 3).copied().unwrap_or(0.0))
+                        * mod_scale;
+                    let feeling_mod = (if d % 2 == 0 {
+                        0.10 * (valence + 0.5 * self.mind.last_recalled_feeling)
+                    } else {
+                        0.10 * (arousal - 0.2)
+                    }) * mod_scale;
+                    let muscle_tone = 0.06 * (self.mind.muscle_cells[d] - 0.5) * mod_scale;
+                    let vocal_explore = 0.03
+                        * self.mind.novelty_emergence.clamp(0.1, 1.5)
+                        * self.mind.next_ion_fluctuation((d as f32) + valence)
+                        * mod_scale;
+                    m_grounded[d] =
+                        (base_m + chain_mod + feeling_mod + muscle_tone + vocal_explore).clamp(0.0, 1.0);
+                }
+                let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
+                motor.vocal_tract = m_grounded;
+                motor.pcm_out = pcm_out;
             }
-            let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
-            motor.vocal_tract = m_grounded;
-            motor.pcm_out = pcm_out;
         } else if !heard_assembly.is_empty() {
             // Conversational vocal response when spoken to without visual objects:
             // Combines auditory-motor echo (`Area Id4`) with recalled cellular vocal synergy (`last_recalled_vocal`)
@@ -823,6 +969,47 @@ impl Organism {
             &motor.action_drive,
             &motor.vocal_tract,
         );
+
+        // Channel 1 + 3: Write experience & broadcast chemical signals into the Living Epigenetic Cell population
+        if stream_heard.len() >= 2 {
+            let aud_0 = self.mind.encode_auditory_state(&stream_heard[0].0);
+            let m_echo_0 = self.assembly_to_vocal_motor(&stream_heard[0].0);
+            let _ = self.mind.step_living_cells(
+                None,
+                Some(&aud_0),
+                drive_vec_opt.as_deref(),
+                &motor.action_drive,
+                &m_echo_0,
+                valence,
+                broadcast,
+            );
+            let aud_1 = self.mind.encode_auditory_state(&stream_heard[1].0);
+            let m_echo_1 = self.assembly_to_vocal_motor(&stream_heard[1].0);
+            let _ = self.mind.step_living_cells(
+                attended_vis_state.as_deref(),
+                Some(&aud_1),
+                None,
+                &motor.action_drive,
+                &m_echo_1,
+                valence,
+                broadcast,
+            );
+        } else {
+            let vocal_for_cell = if !heard_assembly.is_empty() {
+                self.assembly_to_vocal_motor(&heard_assembly)
+            } else {
+                motor.vocal_tract
+            };
+            let _ = self.mind.step_living_cells(
+                attended_vis_state.as_deref(),
+                single_aud_vec.as_deref(),
+                drive_vec_opt.as_deref(),
+                &motor.action_drive,
+                &vocal_for_cell,
+                valence,
+                broadcast,
+            );
+        }
 
         if self.body.state[0] < 0.22 {
             let _ = self.sleep_consolidate(16, 0.005);

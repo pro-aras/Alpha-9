@@ -80,8 +80,12 @@ impl Cochlea {
     }
 
     pub fn transduce(&self, pcm: &[f32]) -> Vec<Vec<f32>> {
+        self.transduce_with_end(pcm).0
+    }
+
+    pub fn transduce_with_end(&self, pcm: &[f32]) -> (Vec<Vec<f32>>, usize, usize) {
         if pcm.is_empty() {
-            return vec![vec![0.0; self.nb]; 3];
+            return (vec![vec![0.0; self.nb]; 3], 0, 0);
         }
         let n_frames = 1 + pcm.len().saturating_sub(self.win) / self.hop;
         let mut energies = Vec::with_capacity(n_frames);
@@ -178,7 +182,11 @@ impl Cochlea {
             (0, energies.len())
         };
 
-        Self::normalize_segment(&energies[i0..i1], self.nb)
+        (
+            Self::normalize_segment(&energies[i0..i1], self.nb),
+            i1,
+            voiced_count,
+        )
     }
 
     fn normalize_segment(slice: &[Vec<f32>], nb: usize) -> Vec<Vec<f32>> {
@@ -220,14 +228,14 @@ impl Cochlea {
     pub fn transduce_stream(&self, pcm: &[f32]) -> Vec<Vec<Vec<f32>>> {
         let mut out = Vec::new();
         let mut offset = 0usize;
-        let min_step = self.hop * 12;
+        let min_step = self.hop * 16;
         while offset + min_step <= pcm.len() {
             let slice = &pcm[offset..];
-            let seg = self.transduce(slice);
-            if seg.is_empty() {
+            let (seg, i1_end, voiced_cnt) = self.transduce_with_end(slice);
+            if seg.is_empty() || voiced_cnt < 8 {
                 break;
             }
-            let consumed_frames = seg.len().max(12);
+            let consumed_frames = (i1_end + 3).max(16);
             out.push(seg);
             offset += consumed_frames * self.hop;
             if out.len() >= 16 {

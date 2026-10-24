@@ -89,6 +89,36 @@ impl QuadripartiteInsula {
     }
 }
 
+/// Living Visceral / Somatic Organ Cell inside `HomeostaticBody`:
+/// Follows the same cellular laws as cortical cells (hunger/feeding on physiological flux,
+/// fullness/satiety, variety tracking, allostatic adaptation, and inter-organ co-bonds).
+#[derive(Clone, Copy, Debug)]
+pub struct VisceralOrganCell {
+    pub organ_role: u8,
+    pub pattern: [f32; 4],
+    pub energy: f32,
+    pub fullness: f32,
+    pub variety: f32,
+    pub adaptation_shield: f32,
+    pub fed_count: u32,
+    pub co_bonds: [f32; 8],
+}
+
+impl Default for VisceralOrganCell {
+    fn default() -> Self {
+        Self {
+            organ_role: 0,
+            pattern: [0.25; 4],
+            energy: 0.75,
+            fullness: 0.0,
+            variety: 0.0,
+            adaptation_shield: 0.10,
+            fed_count: 0,
+            co_bonds: [0.0; 8],
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HomeostaticBody {
     /// [energy_atp, thermal_integrity, social_contact, epistemic_comfort]
@@ -100,6 +130,8 @@ pub struct HomeostaticBody {
     pub arousal: f32,
     pub basal_drain: f32,
     pub insula: QuadripartiteInsula,
+    /// 8 Living Visceral & Insular Organ Cells (4 homeostatic organ systems + 4 insular regions)
+    pub organ_cells: [VisceralOrganCell; 8],
 }
 
 impl Default for HomeostaticBody {
@@ -111,6 +143,12 @@ impl Default for HomeostaticBody {
             let diff = state[i] - set_point[i];
             d += diff * diff;
         }
+        let mut organ_cells = [VisceralOrganCell::default(); 8];
+        for (idx, cell) in organ_cells.iter_mut().enumerate() {
+            cell.organ_role = idx as u8;
+            cell.pattern = [0.10; 4];
+            cell.pattern[idx % 4] = 0.85;
+        }
         Self {
             state,
             set_point,
@@ -120,6 +158,7 @@ impl Default for HomeostaticBody {
             arousal: 0.0,
             basal_drain: 0.004,
             insula: QuadripartiteInsula::default(),
+            organ_cells,
         }
     }
 }
@@ -146,11 +185,79 @@ impl HomeostaticBody {
         surprise: f32,
         top_down_reappraisal: f32,
     ) -> (f32, f32) {
+        // Step living visceral organ cells: hungry organ cells feed on matching bodily flux/deficits,
+        // update fullness & variety, form inter-organ co-bonds, and provide allostatic buffering
+        let mut active_organs = [0.0f32; 8];
+        let mut signal_vec = [0.0f32; 4];
+        for k in 0..4 {
+            signal_vec[k] = (self.set_point[k] - self.state[k]).max(0.0) + (-flux[k]).max(0.0);
+        }
+        let sig_norm = (signal_vec.iter().map(|x| x * x).sum::<f32>()).sqrt() + 1e-6;
+        let sig_unit = [
+            signal_vec[0] / sig_norm,
+            signal_vec[1] / sig_norm,
+            signal_vec[2] / sig_norm,
+            signal_vec[3] / sig_norm,
+        ];
+
+        for idx in 0..8 {
+            let cell = &mut self.organ_cells[idx];
+            cell.fullness = (cell.fullness * 0.65 - 0.04).clamp(0.0, 1.0);
+            cell.energy = (cell.energy - 0.002).clamp(0.10, 1.50);
+            let p_norm = (cell.pattern.iter().map(|x| x * x).sum::<f32>()).sqrt() + 1e-6;
+            let sim = (cell.pattern[0] * sig_unit[0]
+                + cell.pattern[1] * sig_unit[1]
+                + cell.pattern[2] * sig_unit[2]
+                + cell.pattern[3] * sig_unit[3])
+                / p_norm;
+            let hunger = (1.0 - 0.55 * cell.fullness).clamp(0.20, 1.0);
+            if sim * hunger > 0.42 && sig_norm > 0.02 {
+                let lr = (0.12 * hunger).clamp(0.02, 0.20);
+                let mut diff_sq = 0.0f32;
+                for k in 0..4 {
+                    let err = sig_unit[k] - cell.pattern[k];
+                    diff_sq += err * err;
+                    cell.pattern[k] = (1.0 - lr) * cell.pattern[k] + lr * sig_unit[k];
+                }
+                cell.variety = 0.90 * cell.variety + 0.10 * diff_sq.sqrt();
+                cell.energy = (cell.energy + 0.08 * sig_norm).clamp(0.10, 1.50);
+                cell.fullness = (cell.fullness + 0.35).clamp(0.0, 1.0);
+                cell.adaptation_shield = (cell.adaptation_shield + 0.03 * cell.energy).clamp(0.05, 0.65);
+                cell.fed_count = cell.fed_count.saturating_add(1);
+                active_organs[idx] = sim * cell.energy;
+            } else {
+                cell.adaptation_shield = (cell.adaptation_shield * 0.995).clamp(0.05, 0.65);
+            }
+        }
+        // Update decaying co-bonds among simultaneously active visceral organ cells
+        for i in 0..8 {
+            for j in 0..8 {
+                self.organ_cells[i].co_bonds[j] *= 0.992;
+                if i != j && active_organs[i] > 0.10 && active_organs[j] > 0.10 {
+                    let b = &mut self.organ_cells[i].co_bonds[j];
+                    *b = (*b + 0.08 * active_organs[i] * active_organs[j]).clamp(0.0, 1.5);
+                }
+            }
+        }
+
         let spike_cost = 0.015 * spike_fraction;
-        self.state[0] = (self.state[0] - self.basal_drain - spike_cost + flux[0]).clamp(0.0, self.set_point[0]);
-        self.state[1] = (self.state[1] - 0.5 * self.basal_drain + flux[1]).clamp(0.0, self.set_point[1]);
-        self.state[2] = (self.state[2] - 0.8 * self.basal_drain + flux[2]).clamp(0.0, self.set_point[2]);
-        self.state[3] = (self.state[3] - 0.4 * self.basal_drain + flux[3]).clamp(0.0, self.set_point[3]);
+        for k in 0..4 {
+            let drain_scale = match k {
+                0 => 1.0,
+                1 => 0.5,
+                2 => 0.8,
+                _ => 0.4,
+            };
+            let eff_flux = if flux[k] < 0.0 {
+                let shield = 0.35 * self.organ_cells[k].adaptation_shield;
+                flux[k] * (1.0 - shield).clamp(0.35, 1.0)
+            } else {
+                flux[k]
+            };
+            let extra_cost = if k == 0 { spike_cost } else { 0.0 };
+            self.state[k] = (self.state[k] - drain_scale * self.basal_drain - extra_cost + eff_flux)
+                .clamp(0.0, self.set_point[k]);
+        }
 
         let thermal_err = (self.set_point[1] - self.state[1]).max(0.0);
         let energy_err = (self.set_point[0] - self.state[0]).max(0.0);

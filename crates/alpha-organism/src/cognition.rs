@@ -28,6 +28,46 @@
 
 use crate::util::{dot, l2_norm, normalize_l2_in_place};
 
+pub const CELL_TISSUE_RETINA_MEANING: u8 = 0;
+pub const CELL_TISSUE_COCHLEA_WORD: u8 = 1;
+pub const CELL_TISSUE_VISCERAL_DRIVE: u8 = 2;
+pub const CELL_TISSUE_LIMB_MOTOR: u8 = 3;
+pub const CELL_TISSUE_CONCEPT_CLUSTER: u8 = 4;
+
+/// Channel 3 (Brain -> Cells): Chemical / Neuromodulatory Broadcast across all living cells.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModulationBroadcast {
+    pub surprise: f32,
+    pub reward: f32,
+    pub danger: f32,
+    pub rest: f32,
+}
+
+/// Channel 4 (Cells -> Brain): Short status report from the living cells to the Waking Brain.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CellReport {
+    pub matched: bool,
+    pub unknown: bool,
+    pub conflict: bool,
+    pub emotional: bool,
+    pub confidence: f32,
+    pub active_count: usize,
+    pub brain_woke_up: bool,
+}
+
+/// Channel 2 (Brain -> Cells Readout): Result of sending a cue into the living cell population.
+#[derive(Clone, Debug)]
+pub struct CellReadout {
+    pub recalled_meaning: Vec<f32>,
+    pub recalled_word_pat: Vec<f32>,
+    pub recalled_action: [f32; 4],
+    pub recalled_vocal: [f32; 8],
+    pub second_word_vocal: Option<[f32; 8]>,
+    pub recalled_valence: f32,
+    pub active_cell_ids: Vec<u64>,
+    pub report: CellReport,
+}
+
 /// Continuous Dendritic Resonance & Differentiation Circuit:
 #[derive(Clone, Debug)]
 pub struct CorticalComparator {
@@ -85,9 +125,26 @@ impl CorticalComparator {
     }
 }
 
-/// Single Living Cell with Multi-Scale Action Eligibility, Self-Supervised Delta, and Epigenetics:
+/// Single Living Cell with Multi-Scale Action Eligibility, Self-Supervised Delta, Epigenetics,
+/// and Full Ecological Lifecycle (Hunger/Feeding, Fullness, Mitosis/Splitting, Apoptosis with
+/// Neighbor Handoff, Fusion/Merging, Co-occurrence & Directed Time Bonds, and 3D Neighborhoods):
 #[derive(Clone, Debug)]
 pub struct EpigeneticCell {
+    pub id: u64,
+    pub tissue_kind: u8,
+    pub layer: u8,
+    pub energy: f32,
+    pub fullness: f32,
+    pub variance_w: Vec<f32>,
+    pub variety_score: f32,
+    pub similarity_limit: f32,
+    pub decay_rate: f32,
+    pub fed_count: u32,
+    pub pos: [f32; 3],
+    pub co_bonds: Vec<(u64, f32)>,
+    pub time_bonds: Vec<(u64, f32)>,
+    pub parent_id: Option<u64>,
+    pub child_ids: Vec<u64>,
     pub creb_excitability: f32,
     pub chromatin_locked: f32,
     /// Multi-scale intracellular eligibility tags (`fast` ~1-2 ticks, `med` ~4-8 ticks, `slow` ~12-25 ticks)
@@ -114,15 +171,44 @@ pub struct EpigeneticCell {
 
 impl EpigeneticCell {
     pub fn memory_bytes(&self) -> usize {
-        156 + (self.receptor_w.capacity()
+        220 + (self.receptor_w.capacity()
             + self.context_w.capacity()
             + self.axon_out_w.capacity()
-            + self.world_delta_w.capacity())
+            + self.world_delta_w.capacity()
+            + self.variance_w.capacity())
             * 4
+            + (self.co_bonds.capacity() + self.time_bonds.capacity()) * 12
+            + self.child_ids.capacity() * 8
+    }
+
+    pub fn add_or_strengthen_co_bond(&mut self, other_id: u64, delta: f32) {
+        if other_id == self.id {
+            return;
+        }
+        for (id, w) in &mut self.co_bonds {
+            if *id == other_id {
+                *w = (*w + delta).clamp(0.0, 2.5);
+                return;
+            }
+        }
+        self.co_bonds.push((other_id, delta.clamp(0.0, 2.5)));
+    }
+
+    pub fn add_or_strengthen_time_bond(&mut self, next_id: u64, delta: f32) {
+        if next_id == self.id {
+            return;
+        }
+        for (id, w) in &mut self.time_bonds {
+            if *id == next_id {
+                *w = (*w + delta).clamp(0.0, 2.5);
+                return;
+            }
+        }
+        self.time_bonds.push((next_id, delta.clamp(0.0, 2.5)));
     }
 }
 
-/// Unbroken Multi-Timescale Experience Chain + Sparse Epigenetic Cells + 5-Tissue Whole-Body Memory:
+/// Unbroken Multi-Timescale Experience Chain + Living Epigenetic Cell Population + 5-Tissue Whole-Body Memory:
 #[derive(Clone, Debug)]
 pub struct DeliberativeMind {
     pub state_dim: usize,
@@ -137,6 +223,21 @@ pub struct DeliberativeMind {
     pub chain_steps: u64,
     pub novelty_emergence: f32,
     pub cells: Vec<EpigeneticCell>,
+    pub basal_columns: usize,
+    pub next_cell_id: u64,
+    pub max_cells: usize,
+    pub total_energy_budget: f32,
+    pub variety_split_limit: f32,
+    pub merge_similarity_limit: f32,
+    pub prev_active_cell_ids: Vec<u64>,
+    pub last_cell_report: CellReport,
+    pub cells_born: u64,
+    pub cells_split: u64,
+    pub cells_merged: u64,
+    pub cells_died_handoff: u64,
+    pub dream_bridges_formed: u64,
+    pub cheap_cell_steps: u64,
+    pub waking_brain_steps: u64,
     pub prev_cell_state: Vec<f32>,
     pub current_scene_state: Vec<f32>,
     pub transition_context_state: Vec<f32>,
@@ -170,9 +271,10 @@ pub struct DeliberativeMind {
 
 impl DeliberativeMind {
     pub fn new(state_dim: usize, _unused_actions: usize, _unused_cap: usize) -> Self {
-        let n_cells = 256usize;
-        let mut cells = Vec::with_capacity(n_cells);
-        for c in 0..n_cells {
+        let basal_columns = 256usize;
+        let mut cells = Vec::with_capacity(basal_columns + 64);
+        let mut next_cell_id = 1u64;
+        for c in 0..basal_columns {
             let mut receptor_w = vec![0.0f32; state_dim];
             let mut context_w = vec![0.0f32; state_dim];
             for d in 0..state_dim {
@@ -186,7 +288,28 @@ impl DeliberativeMind {
             let creb_init = ((c * 29 + 5) % 97) as f32 / 97.0;
             let mut motor_init = [0.20f32; 4];
             motor_init[c % 4] = 0.70;
+            let cid = next_cell_id;
+            next_cell_id += 1;
             cells.push(EpigeneticCell {
+                id: cid,
+                tissue_kind: CELL_TISSUE_RETINA_MEANING,
+                layer: 0,
+                energy: 0.55,
+                fullness: 0.0,
+                variance_w: vec![0.0; state_dim],
+                variety_score: 0.0,
+                similarity_limit: 0.75,
+                decay_rate: 0.008,
+                fed_count: 0,
+                pos: [
+                    ((c % 16) as f32) / 8.0 - 1.0,
+                    ((c / 16) as f32) / 8.0 - 1.0,
+                    0.0,
+                ],
+                co_bonds: Vec::new(),
+                time_bonds: Vec::new(),
+                parent_id: None,
+                child_ids: Vec::new(),
                 creb_excitability: creb_init,
                 chromatin_locked: 0.0,
                 synaptic_tag: 0.0,
@@ -207,6 +330,60 @@ impl DeliberativeMind {
             });
         }
 
+        // Seed 12 embryonic dynamic tissue cells (4 Meaning/Retina, 4 Word/Cochlea, 4 Drive/Visceral)
+        for e in 0..12usize {
+            let kind = match e % 3 {
+                0 => CELL_TISSUE_RETINA_MEANING,
+                1 => CELL_TISSUE_COCHLEA_WORD,
+                _ => CELL_TISSUE_VISCERAL_DRIVE,
+            };
+            let mut receptor_w = vec![0.0f32; state_dim];
+            for d in 0..state_dim {
+                receptor_w[d] = (((e * 43 + d * 29 + 7) % 101) as f32 / 50.0) - 1.0;
+            }
+            normalize_l2_in_place(&mut receptor_w);
+            let cid = next_cell_id;
+            next_cell_id += 1;
+            cells.push(EpigeneticCell {
+                id: cid,
+                tissue_kind: kind,
+                layer: 0,
+                energy: 0.45,
+                fullness: 0.0,
+                variance_w: vec![0.0; state_dim],
+                variety_score: 0.0,
+                similarity_limit: if kind == CELL_TISSUE_VISCERAL_DRIVE { 0.65 } else { 0.76 },
+                decay_rate: 0.012,
+                fed_count: 1,
+                pos: [
+                    ((e % 4) as f32) * 0.4 - 0.6,
+                    ((e / 4) as f32) * 0.4 - 0.4,
+                    (kind as f32) * 0.3,
+                ],
+                co_bonds: Vec::new(),
+                time_bonds: Vec::new(),
+                parent_id: None,
+                child_ids: Vec::new(),
+                creb_excitability: 0.5,
+                chromatin_locked: 0.0,
+                synaptic_tag: 0.0,
+                tag_med: 0.0,
+                tag_slow: 0.0,
+                erk_nuclear: 0.0,
+                vesicle_ready: 1.0,
+                receptor_w: receptor_w.clone(),
+                context_w: receptor_w,
+                axon_out_w: vec![0.0; state_dim],
+                world_delta_w: vec![0.0; state_dim],
+                somatic_feeling: 0.0,
+                elig_action: [[0.25; 4]; 3],
+                action_pending: 0.0,
+                motor_action_w: [0.25; 4],
+                failed_actions: [0.0; 4],
+                vocal_motor_w: [0.5; 8],
+            });
+        }
+
         Self {
             state_dim,
             comparator: CorticalComparator::new(state_dim),
@@ -220,6 +397,21 @@ impl DeliberativeMind {
             chain_steps: 0,
             novelty_emergence: 0.0,
             cells,
+            basal_columns,
+            next_cell_id,
+            max_cells: 448,
+            total_energy_budget: 140.0,
+            variety_split_limit: 0.145,
+            merge_similarity_limit: 0.965,
+            prev_active_cell_ids: Vec::new(),
+            last_cell_report: CellReport::default(),
+            cells_born: 12,
+            cells_split: 0,
+            cells_merged: 0,
+            cells_died_handoff: 0,
+            dream_bridges_formed: 0,
+            cheap_cell_steps: 0,
+            waking_brain_steps: 0,
             prev_cell_state: vec![0.0f32; state_dim],
             current_scene_state: vec![0.0f32; state_dim],
             transition_context_state: vec![0.0f32; state_dim],
@@ -331,7 +523,7 @@ impl DeliberativeMind {
     pub fn step_epigenetic_cells(&mut self, s_in: &[f32], valence: f32, arousal: f32) {
         let d = self.state_dim;
         let salience = (valence.abs() + 0.5 * arousal).clamp(0.0, 2.0);
-        let n_cells = self.cells.len();
+        let n_cells = self.basal_columns.min(self.cells.len());
 
         // Update distinct-scene transition context whenever the sensory room/object changes
         if l2_norm(&self.current_scene_state) > 0.1 {
@@ -521,7 +713,7 @@ impl DeliberativeMind {
         };
         let has_ctx = l2_norm(ctx_ref) > 0.1;
         let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n_cells);
-        for (c_idx, cell) in self.cells.iter().enumerate() {
+        for (c_idx, cell) in self.cells.iter().take(n_cells).enumerate() {
             let match_s = dot(&cell.receptor_w, s_in);
             let match_ctx = if has_ctx {
                 dot(&cell.context_w, ctx_ref)
@@ -564,6 +756,9 @@ impl DeliberativeMind {
             cell.tag_med = (cell.tag_med + 0.45).clamp(0.0, 1.0);
             cell.tag_slow = (cell.tag_slow + 0.35).clamp(0.0, 1.0);
             cell.creb_excitability *= 0.10;
+            cell.energy = (cell.energy + 0.08).clamp(0.10, 1.50);
+            cell.fullness = (cell.fullness + 0.25).clamp(0.0, 1.0);
+            cell.fed_count = cell.fed_count.saturating_add(1);
         }
 
         // Now read out cellular experience, similarity/difference, and motor/vocal predictions AFTER update!
@@ -583,10 +778,15 @@ impl DeliberativeMind {
         self.last_recalled_vocal = rec_voc;
 
         // Count how many cells currently have locked chromatin for homeostatic TET demethylation
-        let locked_count = self.cells.iter().filter(|c| c.chromatin_locked > 0.5).count();
+        let locked_count = self
+            .cells
+            .iter()
+            .take(n_cells)
+            .filter(|c| c.chromatin_locked > 0.5)
+            .count();
         let tet_demethyl_active = locked_count > (n_cells * 185) / 256;
 
-        for (c_idx, cell) in self.cells.iter_mut().enumerate() {
+        for (c_idx, cell) in self.cells.iter_mut().take(n_cells).enumerate() {
             let is_active = self.active_ensemble.iter().any(|&x| x == c_idx);
             if !is_active {
                 let wave = (((step_u * 17 + c_idx * 11) % 97) as f32) / 97.0;
@@ -596,6 +796,7 @@ impl DeliberativeMind {
                 cell.synaptic_tag *= 0.94;
                 cell.tag_med *= 0.78;
                 cell.tag_slow *= 0.93;
+                cell.fullness = (cell.fullness * 0.65 - 0.04).clamp(0.0, 1.0);
 
                 // Homeostatic TET enzyme demethylation: gently recycle cells with weak emotional anchors
                 // when total locked chromatin exceeds ~72% of the pool, keeping ~28% plastic cells open!
@@ -628,12 +829,13 @@ impl DeliberativeMind {
     ) -> (Vec<f32>, f32, [f32; 4], [f32; 8]) {
         let d = self.state_dim;
         let half = (d / 2).max(1);
+        let n_basal = self.basal_columns.min(self.cells.len());
 
         // First check whether `s` matches any known cell directly (`max_full >= 0.78`)
         // and whether `s` matches any motor-specialized cell directly (`max_motor_full >= 0.78`)
         let mut max_full = 0.0f32;
         let mut max_motor_full = 0.0f32;
-        for cell in &self.cells {
+        for cell in self.cells.iter().take(n_basal) {
             if l2_norm(&cell.axon_out_w) < 1e-4 && cell.chromatin_locked < 0.05 {
                 continue;
             }
@@ -647,9 +849,9 @@ impl DeliberativeMind {
             }
         }
 
-        let mut scores: Vec<(usize, f32)> = Vec::with_capacity(self.cells.len());
-        let mut motor_scores: Vec<(usize, f32)> = Vec::with_capacity(self.cells.len());
-        for (c_idx, cell) in self.cells.iter().enumerate() {
+        let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n_basal);
+        let mut motor_scores: Vec<(usize, f32)> = Vec::with_capacity(n_basal);
+        for (c_idx, cell) in self.cells.iter().take(n_basal).enumerate() {
             if l2_norm(&cell.axon_out_w) < 1e-4 && cell.chromatin_locked < 0.05 {
                 continue;
             }
@@ -773,8 +975,9 @@ impl DeliberativeMind {
     pub fn resonate_and_explain(&self, s_novel: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>, f32) {
         let d = self.state_dim;
         let half = (d / 2).max(1);
+        let n_basal = self.basal_columns.min(self.cells.len());
         let mut candidates: Vec<(usize, f32)> = Vec::new();
-        for (c_idx, cell) in self.cells.iter().enumerate() {
+        for (c_idx, cell) in self.cells.iter().take(n_basal).enumerate() {
             if cell.chromatin_locked < 0.35 || l2_norm(&cell.axon_out_w) < 1e-4 {
                 continue;
             }
@@ -958,9 +1161,10 @@ impl DeliberativeMind {
     pub fn spontaneous_replay_step(&mut self, eta: f32) -> Vec<f32> {
         let d = self.state_dim;
         self.chain_steps += 1;
+        let _ = self.dream_living_cells(3);
         let mut best_idx = 0usize;
         let mut best_drive = f32::NEG_INFINITY;
-        let n_cells = self.cells.len();
+        let n_cells = self.basal_columns.min(self.cells.len());
         for c_idx in 0..n_cells {
             if l2_norm(&self.cells[c_idx].axon_out_w) < 1e-4 {
                 continue;
@@ -1022,5 +1226,1016 @@ impl DeliberativeMind {
             wave = next_w;
         }
         wave
+    }
+
+    #[inline]
+    pub fn find_cell_idx(&self, cell_id: u64) -> Option<usize> {
+        self.cells.iter().position(|c| c.id == cell_id)
+    }
+
+    /// Channel 2 (Brain -> Cells Readout) + Channel 4 (Cells -> Brain Report):
+    /// Sends sensory/word/drive cues into the living `EpigeneticCell` population (`self.cells`),
+    /// runs within-modality lateral inhibition and associative spreading along `co_bonds`,
+    /// orders multi-word sequences via `time_bonds` + `fullness`, and reports whether the
+    /// Waking Brain needs to wake up (`report.brain_woke_up`).
+    pub fn read_living_cells(
+        &mut self,
+        meaning_cue: Option<&[f32]>,
+        word_cue: Option<&[f32]>,
+        drive_cue: Option<&[f32]>,
+        broadcast: ModulationBroadcast,
+    ) -> CellReadout {
+        let start = self.basal_columns.min(self.cells.len());
+        let n = self.cells.len();
+        let mut raw_excite = vec![0.0f32; n];
+        let mut best_meaning_sim = 0.0f32;
+        let mut best_word_sim = 0.0f32;
+        let mut has_input_cue = false;
+
+        for idx in start..n {
+            let c = &self.cells[idx];
+            let hunger_gate = (1.0 - 0.55 * c.fullness).clamp(0.15, 1.0);
+            let mut sim = 0.0f32;
+            match c.tissue_kind {
+                CELL_TISSUE_RETINA_MEANING | CELL_TISSUE_CONCEPT_CLUSTER => {
+                    if let Some(m_vec) = meaning_cue {
+                        if l2_norm(m_vec) > 0.05 {
+                            has_input_cue = true;
+                            let s = dot(&c.receptor_w, m_vec);
+                            if c.tissue_kind == CELL_TISSUE_RETINA_MEANING && s > best_meaning_sim {
+                                best_meaning_sim = s;
+                            }
+                            if s >= c.similarity_limit - 0.06 {
+                                sim = s;
+                            }
+                        }
+                    }
+                }
+                CELL_TISSUE_COCHLEA_WORD => {
+                    if let Some(w_vec) = word_cue {
+                        if l2_norm(w_vec) > 0.05 {
+                            has_input_cue = true;
+                            let s = dot(&c.receptor_w, w_vec);
+                            if s > best_word_sim {
+                                best_word_sim = s;
+                            }
+                            if s >= c.similarity_limit - 0.06 {
+                                sim = s;
+                            }
+                        }
+                    }
+                }
+                CELL_TISSUE_VISCERAL_DRIVE => {
+                    if let Some(d_vec) = drive_cue {
+                        if l2_norm(d_vec) > 0.05 {
+                            has_input_cue = true;
+                            let s = dot(&c.receptor_w, d_vec);
+                            if s >= c.similarity_limit - 0.15 {
+                                sim = s;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if sim > 0.0 {
+                raw_excite[idx] = sim * hunger_gate * (0.45 + 0.55 * c.energy);
+            }
+        }
+
+        // Associative spreading across `co_bonds` (steered by active Meaning and Drive clusters):
+        // Note: `time_bonds` ONLY boost a target word cell if that word cell ALREADY has
+        // `co_bond` support from an active meaning/drive cluster in the room!
+        let mut spread_co = vec![0.0f32; n];
+        for idx in start..n {
+            let a_i = raw_excite[idx];
+            if a_i <= 0.05 {
+                continue;
+            }
+            let co_list = self.cells[idx].co_bonds.clone();
+            for (nid, w_co) in co_list {
+                if let Some(n_idx) = self.find_cell_idx(nid) {
+                    if n_idx >= start {
+                        let h_gate = (1.0 - 0.50 * self.cells[n_idx].fullness).clamp(0.15, 1.0);
+                        spread_co[n_idx] += 0.62 * a_i * w_co * h_gate;
+                    }
+                }
+            }
+        }
+        for idx in start..n {
+            raw_excite[idx] = (raw_excite[idx] + spread_co[idx]).clamp(0.0, 3.0);
+        }
+
+        // Second wave: time-ordered bonds (`time_bonds`) boost word cells ONLY if they are
+        // already supported by the active meaning/drive cluster (`raw_excite[n_idx] > 0.08`)
+        let mut spread_time = vec![0.0f32; n];
+        for idx in start..n {
+            let a_i = raw_excite[idx];
+            if a_i <= 0.05 {
+                continue;
+            }
+            let t_list = self.cells[idx].time_bonds.clone();
+            for (nid, w_t) in t_list {
+                if let Some(n_idx) = self.find_cell_idx(nid) {
+                    if n_idx >= start && raw_excite[n_idx] > 0.08 {
+                        let h_gate = (1.0 - 0.65 * self.cells[n_idx].fullness).clamp(0.10, 1.0);
+                        spread_time[n_idx] += 0.35 * a_i * w_t * h_gate;
+                    }
+                }
+            }
+        }
+        for idx in start..n {
+            raw_excite[idx] = (raw_excite[idx] + spread_time[idx]).clamp(0.0, 3.0);
+        }
+
+        // Global lateral inhibition WITHIN each tissue role so high-amplitude visual cells never
+        // silence associatively-excited word cells in a silent room
+        let mut ranked: Vec<(usize, f32)> = Vec::new();
+        for kind_filter in [
+            CELL_TISSUE_RETINA_MEANING,
+            CELL_TISSUE_COCHLEA_WORD,
+            CELL_TISSUE_VISCERAL_DRIVE,
+            CELL_TISSUE_CONCEPT_CLUSTER,
+        ] {
+            let mut group: Vec<(usize, f32)> = (start..n)
+                .filter(|&i| self.cells[i].tissue_kind == kind_filter && raw_excite[i] > 0.06)
+                .map(|i| (i, raw_excite[i]))
+                .collect();
+            group.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let g_max = group.first().map(|x| x.1).unwrap_or(0.0);
+            for &(idx, sc) in group.iter().take(4) {
+                if sc >= g_max * 0.18 {
+                    ranked.push((idx, sc));
+                }
+            }
+        }
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut recalled_meaning = vec![0.0f32; self.state_dim];
+        let mut recalled_word_pat = vec![0.0f32; self.state_dim];
+        let mut recalled_action = [0.25f32; 4];
+        let mut recalled_vocal = [0.50f32; 8];
+        let mut second_word_vocal: Option<[f32; 8]> = None;
+        let mut recalled_valence = 0.0f32;
+        let mut active_cell_ids = Vec::new();
+
+        let mut m_w_sum = 0.0f32;
+        let mut act_w_sum = 0.0f32;
+        let mut word_candidates: Vec<(usize, f32)> = Vec::new();
+
+        for &(idx, sc) in &ranked {
+            let c = &self.cells[idx];
+            active_cell_ids.push(c.id);
+            match c.tissue_kind {
+                CELL_TISSUE_RETINA_MEANING | CELL_TISSUE_CONCEPT_CLUSTER => {
+                    for d in 0..self.state_dim {
+                        recalled_meaning[d] += sc * c.receptor_w[d];
+                    }
+                    m_w_sum += sc;
+                    if act_w_sum == 0.0 {
+                        recalled_action = [0.0; 4];
+                    }
+                    for a in 0..4 {
+                        recalled_action[a] += sc * c.motor_action_w[a];
+                    }
+                    recalled_valence += sc * c.somatic_feeling;
+                    act_w_sum += sc;
+                }
+                CELL_TISSUE_COCHLEA_WORD => {
+                    word_candidates.push((idx, sc));
+                }
+                _ => {}
+            }
+        }
+
+        if m_w_sum > 1e-6 {
+            normalize_l2_in_place(&mut recalled_meaning);
+        }
+        if act_w_sum > 1e-6 {
+            for a in 0..4 {
+                recalled_action[a] /= act_w_sum;
+            }
+            recalled_valence /= act_w_sum;
+        }
+
+        if !word_candidates.is_empty() {
+            let first_pos = if word_candidates.len() >= 2 {
+                let mut best_first_pos = 0usize;
+                let mut best_order_score = f32::NEG_INFINITY;
+                for (pos_i, &(w_idx, w_sc)) in word_candidates.iter().enumerate() {
+                    let order_sc = self.compute_sequence_order_score(w_idx, w_sc, &word_candidates);
+                    if order_sc > best_order_score {
+                        best_order_score = order_sc;
+                        best_first_pos = pos_i;
+                    }
+                }
+                best_first_pos
+            } else {
+                0usize
+            };
+
+            let (w1_idx, _) = word_candidates[first_pos];
+            recalled_word_pat.copy_from_slice(&self.cells[w1_idx].receptor_w);
+            recalled_vocal = self.cells[w1_idx].vocal_motor_w;
+            self.cells[w1_idx].fullness = (self.cells[w1_idx].fullness + 0.35).clamp(0.0, 1.0);
+
+            // Second word candidate in a two-word phrase (`"want cat"`):
+            // Must be a distinct word pattern (`dot < 0.82`) excited by the active meaning cluster
+            for (pos_j, &(w2_idx, w2_sc)) in word_candidates.iter().enumerate() {
+                if pos_j == first_pos {
+                    continue;
+                }
+                let pat_sim = dot(&self.cells[w1_idx].receptor_w, &self.cells[w2_idx].receptor_w);
+                if pat_sim < 0.82 && w2_sc > 0.05 {
+                    second_word_vocal = Some(self.cells[w2_idx].vocal_motor_w);
+                    self.cells[w2_idx].fullness = (self.cells[w2_idx].fullness + 0.25).clamp(0.0, 1.0);
+                    break;
+                }
+            }
+        }
+
+        let best_cue_sim = best_meaning_sim.max(best_word_sim);
+        let matched = !active_cell_ids.is_empty() && best_cue_sim >= 0.72;
+        let unknown = has_input_cue && !matched;
+        let conflict = ranked.len() >= 2
+            && self.cells[ranked[0].0].tissue_kind == self.cells[ranked[1].0].tissue_kind
+            && (ranked[0].1 - ranked[1].1).abs() < 0.06
+            && dot(&self.cells[ranked[0].0].receptor_w, &self.cells[ranked[1].0].receptor_w) < 0.50;
+        let emotional = recalled_valence.abs() > 0.25
+            || broadcast.reward > 0.20
+            || broadcast.danger > 0.20;
+        let brain_woke_up = unknown || conflict || broadcast.surprise > 0.45;
+        if brain_woke_up {
+            self.waking_brain_steps += 1;
+        } else if matched {
+            self.cheap_cell_steps += 1;
+        }
+
+        let report = CellReport {
+            matched,
+            unknown,
+            conflict,
+            emotional,
+            confidence: best_cue_sim.clamp(0.0, 1.0),
+            active_count: active_cell_ids.len(),
+            brain_woke_up,
+        };
+        self.last_cell_report = report;
+
+        CellReadout {
+            recalled_meaning,
+            recalled_word_pat,
+            recalled_action,
+            recalled_vocal,
+            second_word_vocal,
+            recalled_valence,
+            active_cell_ids,
+            report,
+        }
+    }
+
+    fn compute_sequence_order_score(
+        &self,
+        w_idx: usize,
+        w_sc: f32,
+        candidates: &[(usize, f32)],
+    ) -> f32 {
+        let c = &self.cells[w_idx];
+        let mut score = 0.25 * w_sc * (1.0 - 0.5 * c.fullness);
+        // Outgoing time_bonds (`A -> B`) indicate an initiator/prefix word (like `"want"`)
+        let out_time_sum: f32 = c.time_bonds.iter().map(|(_, w)| *w).sum();
+        score += 0.45 * out_time_sum.min(2.5);
+
+        // Check if this word cell is bonded to an active Drive cell (`Drive("want") <-> Word("want")`),
+        // where Drive cells naturally initiate request sequences before object-meaning words
+        for &(co_id, w_co) in &c.co_bonds {
+            if let Some(co_idx) = self.find_cell_idx(co_id) {
+                if self.cells[co_idx].tissue_kind == CELL_TISSUE_VISCERAL_DRIVE {
+                    score += 0.85 * w_co;
+                }
+            }
+        }
+
+        for &(other_idx, _) in candidates {
+            if other_idx == w_idx {
+                continue;
+            }
+            let other_id = self.cells[other_idx].id;
+            for &(tid, tw) in &c.time_bonds {
+                if tid == other_id {
+                    score += 1.20 * tw;
+                }
+            }
+            for &(tid, tw) in &self.cells[other_idx].time_bonds {
+                if tid == c.id {
+                    score -= 1.20 * tw;
+                }
+            }
+        }
+        score
+    }
+
+    /// Channel 1 (Brain -> Cells Write) + Full Ecological Lifecycle Step on `self.cells`:
+    /// 1. Decay `fullness`, `energy`, `co_bonds`, and `time_bonds`.
+    /// 2. Feed matching cells or birth new `EpigeneticCell`s when input fits no existing cell (`unknown`).
+    /// 3. Consolidate repeatedly fed STM cells (`layer 0 -> 1`).
+    /// 4. Strengthen `co_bonds` and directed `time_bonds` (`prev_active_cell_ids -> current_active_ids`)
+    ///    and move bonded cells toward each other in 3D space (`pos`).
+    /// 5. Variety-limit Mitosis (`variety_score > variety_split_limit` -> Parent Concept + 2 Daughter Cells).
+    /// 6. Elevate spatial neighborhood clusters into `CELL_TISSUE_CONCEPT_CLUSTER` cells (`layer = 2`).
+    /// 7. Merge near-duplicate cells (`cos > merge_similarity_limit`) and reap starved cells with
+    ///    full Neighbor Handoff (`cells_died_handoff`).
+    pub fn step_living_cells(
+        &mut self,
+        meaning_vec: Option<&[f32]>,
+        word_vec: Option<&[f32]>,
+        drive_vec: Option<&[f32]>,
+        motor_act: &[f32; 4],
+        vocal_act: &[f32; 8],
+        valence: f32,
+        broadcast: ModulationBroadcast,
+    ) -> CellReport {
+        let start = self.basal_columns.min(self.cells.len());
+        for c in self.cells.iter_mut().skip(start) {
+            c.fullness = (c.fullness * 0.62 - 0.04).clamp(0.0, 1.0);
+            let eff_decay = c.decay_rate * (1.0 - 0.45 * broadcast.rest);
+            c.energy = (c.energy - eff_decay).clamp(0.0, 2.0);
+            for (_, w) in &mut c.co_bonds {
+                *w *= 0.995;
+            }
+            c.co_bonds.retain(|(_, w)| *w > 0.015);
+            for (_, w) in &mut c.time_bonds {
+                *w *= 0.995;
+            }
+            c.time_bonds.retain(|(_, w)| *w > 0.015);
+        }
+
+        let mut current_active_ids: Vec<u64> = Vec::new();
+        let mut any_unknown = false;
+        let mut any_matched = false;
+
+        if let Some(m_in) = meaning_vec {
+            if l2_norm(m_in) > 0.08 {
+                let (cid, was_born) = self.feed_or_birth_cell(
+                    CELL_TISSUE_RETINA_MEANING,
+                    m_in,
+                    motor_act,
+                    vocal_act,
+                    valence,
+                );
+                current_active_ids.push(cid);
+                if was_born {
+                    any_unknown = true;
+                } else {
+                    any_matched = true;
+                }
+            }
+        }
+
+        if let Some(w_in) = word_vec {
+            if l2_norm(w_in) > 0.08 {
+                let (cid, was_born) = self.feed_or_birth_cell(
+                    CELL_TISSUE_COCHLEA_WORD,
+                    w_in,
+                    motor_act,
+                    vocal_act,
+                    valence,
+                );
+                current_active_ids.push(cid);
+                if was_born {
+                    any_unknown = true;
+                } else {
+                    any_matched = true;
+                }
+            }
+        }
+
+        if let Some(d_in) = drive_vec {
+            if l2_norm(d_in) > 0.08 {
+                let (cid, _) = self.feed_or_birth_cell(
+                    CELL_TISSUE_VISCERAL_DRIVE,
+                    d_in,
+                    motor_act,
+                    vocal_act,
+                    valence,
+                );
+                current_active_ids.push(cid);
+            }
+        }
+
+        let bond_gain = (0.28 + 0.35 * (broadcast.reward + broadcast.danger + broadcast.surprise))
+            .clamp(0.18, 0.85);
+        for i in 0..current_active_ids.len() {
+            for j in (i + 1)..current_active_ids.len() {
+                let id_a = current_active_ids[i];
+                let id_b = current_active_ids[j];
+                if let Some(idx_a) = self.find_cell_idx(id_a) {
+                    self.cells[idx_a].add_or_strengthen_co_bond(id_b, bond_gain);
+                }
+                if let Some(idx_b) = self.find_cell_idx(id_b) {
+                    self.cells[idx_b].add_or_strengthen_co_bond(id_a, bond_gain);
+                }
+                self.pull_cells_together(id_a, id_b, 0.08);
+            }
+        }
+
+        if !self.prev_active_cell_ids.is_empty() && !current_active_ids.is_empty() {
+            let prev_ids = self.prev_active_cell_ids.clone();
+            for &prev_id in &prev_ids {
+                for &curr_id in &current_active_ids {
+                    if prev_id != curr_id {
+                        if let Some(p_idx) = self.find_cell_idx(prev_id) {
+                            self.cells[p_idx].add_or_strengthen_time_bond(curr_id, bond_gain * 0.90);
+                        }
+                    }
+                }
+            }
+        }
+        if !current_active_ids.is_empty() {
+            self.prev_active_cell_ids = current_active_ids.clone();
+        }
+
+        self.check_and_split_cells();
+        self.elevate_neighborhood_clusters();
+        self.merge_near_duplicate_cells();
+        self.reap_starved_cells_with_handoff();
+
+        let brain_woke_up = any_unknown || broadcast.surprise > 0.45;
+        if brain_woke_up {
+            self.waking_brain_steps += 1;
+        } else if any_matched {
+            self.cheap_cell_steps += 1;
+        }
+        let report = CellReport {
+            matched: any_matched,
+            unknown: any_unknown,
+            conflict: false,
+            emotional: valence.abs() > 0.20,
+            confidence: if any_matched { 0.88 } else { 0.30 },
+            active_count: current_active_ids.len(),
+            brain_woke_up,
+        };
+        self.last_cell_report = report;
+        report
+    }
+
+    fn feed_or_birth_cell(
+        &mut self,
+        tissue_kind: u8,
+        pat_in: &[f32],
+        motor_act: &[f32; 4],
+        vocal_act: &[f32; 8],
+        valence: f32,
+    ) -> (u64, bool) {
+        let mut pat = vec![0.0f32; self.state_dim];
+        let n_copy = self.state_dim.min(pat_in.len());
+        pat[..n_copy].copy_from_slice(&pat_in[..n_copy]);
+        normalize_l2_in_place(&mut pat);
+
+        let start = self.basal_columns.min(self.cells.len());
+        let mut best_idx: Option<usize> = None;
+        let mut best_score = f32::NEG_INFINITY;
+
+        for idx in start..self.cells.len() {
+            let c = &self.cells[idx];
+            if c.tissue_kind != tissue_kind {
+                continue;
+            }
+            let sim = dot(&c.receptor_w, &pat);
+            // Strict similarity limit so distinct words ("ball", "cup", "cat", "dog", "want")
+            // each birth their own living cell instead of swallowing each other!
+            if sim >= c.similarity_limit {
+                let hunger = (1.0 - 0.45 * c.fullness).clamp(0.25, 1.0);
+                let sc = sim * hunger;
+                if sc > best_score {
+                    best_score = sc;
+                    best_idx = Some(idx);
+                }
+            }
+        }
+
+        if let Some(idx) = best_idx {
+            let c = &mut self.cells[idx];
+            let lr = if c.layer == 0 {
+                (0.26 / (1.0 + 0.12 * (c.fed_count as f32))).clamp(0.05, 0.26)
+            } else {
+                0.04
+            };
+            let mut var_sum = 0.0f32;
+            for d in 0..self.state_dim {
+                let diff = pat[d] - c.receptor_w[d];
+                c.variance_w[d] = 0.82 * c.variance_w[d] + 0.18 * (diff * diff);
+                var_sum += c.variance_w[d];
+                c.receptor_w[d] += lr * diff;
+            }
+            normalize_l2_in_place(&mut c.receptor_w);
+            c.variety_score = var_sum.sqrt();
+            c.energy = (c.energy + 0.24).clamp(0.10, 1.85);
+            c.fullness = (c.fullness + 0.35).clamp(0.0, 1.0);
+            c.fed_count = c.fed_count.saturating_add(1);
+            c.somatic_feeling = 0.80 * c.somatic_feeling + 0.20 * valence;
+
+            if valence >= 0.08 {
+                for a in 0..4 {
+                    c.motor_action_w[a] = 0.25 * c.motor_action_w[a] + 0.75 * motor_act[a];
+                }
+            }
+            if tissue_kind == CELL_TISSUE_COCHLEA_WORD {
+                for v in 0..8 {
+                    c.vocal_motor_w[v] = 0.25 * c.vocal_motor_w[v] + 0.75 * vocal_act[v];
+                }
+            }
+
+            if c.layer == 0 && c.fed_count >= 5 && c.energy >= 0.90 {
+                c.layer = 1;
+                c.decay_rate = 0.0020;
+                c.similarity_limit = (c.similarity_limit + 0.02).clamp(0.68, 0.90);
+            }
+            return (c.id, false);
+        }
+
+        // Birth (Neurogenesis) of a new living `EpigeneticCell`
+        let new_id = self.next_cell_id;
+        self.next_cell_id += 1;
+        self.cells_born += 1;
+        let p0 = self.next_ion_fluctuation(new_id as f32) * 0.8;
+        let p1 = self.next_ion_fluctuation((new_id * 3) as f32) * 0.8;
+        let p2 = (tissue_kind as f32) * 0.35;
+        let sim_lim = match tissue_kind {
+            CELL_TISSUE_COCHLEA_WORD => 0.84,
+            CELL_TISSUE_RETINA_MEANING => 0.85,
+            CELL_TISSUE_VISCERAL_DRIVE => 0.68,
+            _ => 0.78,
+        };
+        let new_cell = EpigeneticCell {
+            id: new_id,
+            tissue_kind,
+            layer: 0,
+            energy: 0.82,
+            fullness: 0.30,
+            variance_w: vec![0.0; self.state_dim],
+            variety_score: 0.0,
+            similarity_limit: sim_lim,
+            decay_rate: 0.009,
+            fed_count: 1,
+            pos: [p0, p1, p2],
+            co_bonds: Vec::new(),
+            time_bonds: Vec::new(),
+            parent_id: None,
+            child_ids: Vec::new(),
+            creb_excitability: 0.6,
+            chromatin_locked: 0.2,
+            synaptic_tag: 0.5,
+            tag_med: 0.3,
+            tag_slow: 0.2,
+            erk_nuclear: 0.2,
+            vesicle_ready: 1.0,
+            receptor_w: pat.clone(),
+            context_w: pat,
+            axon_out_w: vec![0.0; self.state_dim],
+            world_delta_w: vec![0.0; self.state_dim],
+            somatic_feeling: valence,
+            elig_action: [*motor_act; 3],
+            action_pending: 0.0,
+            motor_action_w: *motor_act,
+            failed_actions: [0.0; 4],
+            vocal_motor_w: *vocal_act,
+        };
+        self.cells.push(new_cell);
+        (new_id, true)
+    }
+
+    fn pull_cells_together(&mut self, id_a: u64, id_b: u64, step: f32) {
+        let (Some(ia), Some(ib)) = (self.find_cell_idx(id_a), self.find_cell_idx(id_b)) else {
+            return;
+        };
+        let pos_a = self.cells[ia].pos;
+        let pos_b = self.cells[ib].pos;
+        for k in 0..3 {
+            let diff = pos_b[k] - pos_a[k];
+            self.cells[ia].pos[k] = (self.cells[ia].pos[k] + step * diff).clamp(-2.0, 2.0);
+            self.cells[ib].pos[k] = (self.cells[ib].pos[k] - step * diff).clamp(-2.0, 2.0);
+        }
+    }
+
+    fn check_and_split_cells(&mut self) {
+        if self.cells.len() + 2 > self.max_cells {
+            return;
+        }
+        let start = self.basal_columns.min(self.cells.len());
+        let mut to_split: Option<usize> = None;
+        for idx in start..self.cells.len() {
+            let c = &self.cells[idx];
+            if c.child_ids.is_empty()
+                && c.fed_count >= 4
+                && c.variety_score > self.variety_split_limit
+                && c.layer < 2
+            {
+                to_split = Some(idx);
+                break;
+            }
+        }
+        let Some(p_idx) = to_split else {
+            return;
+        };
+
+        let id_a = self.next_cell_id;
+        let id_b = self.next_cell_id + 1;
+        self.next_cell_id += 2;
+        self.cells_split += 1;
+
+        let parent = self.cells[p_idx].clone();
+        let mut pat_a = parent.receptor_w.clone();
+        let mut pat_b = parent.receptor_w.clone();
+        for d in 0..self.state_dim {
+            let offset = parent.variance_w[d].sqrt().max(0.14) * 0.70;
+            let sign = if d % 2 == 0 { 1.0 } else { -1.0 };
+            pat_a[d] += sign * offset;
+            pat_b[d] -= sign * offset;
+        }
+        normalize_l2_in_place(&mut pat_a);
+        normalize_l2_in_place(&mut pat_b);
+
+        self.cells[p_idx].layer = (parent.layer + 1).min(3);
+        self.cells[p_idx].tissue_kind = CELL_TISSUE_CONCEPT_CLUSTER;
+        self.cells[p_idx].variety_score *= 0.35;
+        for v in &mut self.cells[p_idx].variance_w {
+            *v *= 0.25;
+        }
+        self.cells[p_idx].decay_rate = 0.0018;
+        self.cells[p_idx].child_ids.push(id_a);
+        self.cells[p_idx].child_ids.push(id_b);
+        self.cells[p_idx].add_or_strengthen_co_bond(id_a, 0.95);
+        self.cells[p_idx].add_or_strengthen_co_bond(id_b, 0.95);
+
+        let mut child_a = EpigeneticCell {
+            id: id_a,
+            tissue_kind: parent.tissue_kind,
+            layer: 0,
+            energy: (parent.energy * 0.65).max(0.55),
+            fullness: 0.15,
+            variance_w: vec![0.0; self.state_dim],
+            variety_score: 0.0,
+            similarity_limit: (parent.similarity_limit + 0.05).clamp(0.72, 0.88),
+            decay_rate: 0.006,
+            fed_count: 2,
+            pos: [parent.pos[0] - 0.08, parent.pos[1] + 0.06, parent.pos[2]],
+            co_bonds: parent.co_bonds.clone(),
+            time_bonds: parent.time_bonds.clone(),
+            parent_id: Some(parent.id),
+            child_ids: Vec::new(),
+            creb_excitability: 0.5,
+            chromatin_locked: parent.chromatin_locked,
+            synaptic_tag: 0.3,
+            tag_med: 0.2,
+            tag_slow: 0.2,
+            erk_nuclear: 0.2,
+            vesicle_ready: 1.0,
+            receptor_w: pat_a.clone(),
+            context_w: pat_a,
+            axon_out_w: parent.axon_out_w.clone(),
+            world_delta_w: parent.world_delta_w.clone(),
+            somatic_feeling: parent.somatic_feeling,
+            elig_action: parent.elig_action,
+            action_pending: 0.0,
+            motor_action_w: parent.motor_action_w,
+            failed_actions: parent.failed_actions,
+            vocal_motor_w: parent.vocal_motor_w,
+        };
+        child_a.add_or_strengthen_co_bond(parent.id, 0.95);
+        child_a.add_or_strengthen_co_bond(id_b, 0.50);
+
+        let mut child_b = child_a.clone();
+        child_b.id = id_b;
+        child_b.receptor_w = pat_b.clone();
+        child_b.context_w = pat_b;
+        child_b.pos = [parent.pos[0] + 0.08, parent.pos[1] - 0.06, parent.pos[2]];
+        child_b.co_bonds = parent.co_bonds.clone();
+        child_b.add_or_strengthen_co_bond(parent.id, 0.95);
+        child_b.add_or_strengthen_co_bond(id_a, 0.50);
+
+        self.cells.push(child_a);
+        self.cells.push(child_b);
+    }
+
+    fn elevate_neighborhood_clusters(&mut self) {
+        if self.cells.len() >= self.max_cells {
+            return;
+        }
+        let start = self.basal_columns.min(self.cells.len());
+        let n = self.cells.len();
+        for i in start..n {
+            if self.cells[i].layer >= 2 || self.cells[i].parent_id.is_some() {
+                continue;
+            }
+            let mut cluster_members = vec![i];
+            for &(nid, w_co) in &self.cells[i].co_bonds {
+                if w_co < 0.55 {
+                    continue;
+                }
+                if let Some(j) = self.find_cell_idx(nid) {
+                    if j >= start && self.cells[j].layer < 2 && self.cells[j].parent_id.is_none() {
+                        let d2 = (self.cells[i].pos[0] - self.cells[j].pos[0]).powi(2)
+                            + (self.cells[i].pos[1] - self.cells[j].pos[1]).powi(2)
+                            + (self.cells[i].pos[2] - self.cells[j].pos[2]).powi(2);
+                        if d2 < 0.30 {
+                            cluster_members.push(j);
+                        }
+                    }
+                }
+            }
+            if cluster_members.len() >= 3 {
+                let concept_id = self.next_cell_id;
+                self.next_cell_id += 1;
+                self.cells_born += 1;
+
+                let mut centroid_pat = vec![0.0f32; self.state_dim];
+                let mut centroid_pos = [0.0f32; 3];
+                let mut child_ids = Vec::new();
+                let mut co_bonds = Vec::new();
+                for &m_idx in &cluster_members {
+                    for d in 0..self.state_dim {
+                        centroid_pat[d] += self.cells[m_idx].receptor_w[d];
+                    }
+                    for k in 0..3 {
+                        centroid_pos[k] += self.cells[m_idx].pos[k];
+                    }
+                    let mid = self.cells[m_idx].id;
+                    child_ids.push(mid);
+                    co_bonds.push((mid, 0.90));
+                }
+                normalize_l2_in_place(&mut centroid_pat);
+                let inv = 1.0 / (cluster_members.len() as f32);
+                centroid_pos[0] *= inv;
+                centroid_pos[1] *= inv;
+                centroid_pos[2] = centroid_pos[2] * inv + 0.25;
+
+                for &m_idx in &cluster_members {
+                    self.cells[m_idx].parent_id = Some(concept_id);
+                    self.cells[m_idx].add_or_strengthen_co_bond(concept_id, 0.90);
+                }
+
+                let concept_cell = EpigeneticCell {
+                    id: concept_id,
+                    tissue_kind: CELL_TISSUE_CONCEPT_CLUSTER,
+                    layer: 2,
+                    energy: 1.05,
+                    fullness: 0.0,
+                    variance_w: vec![0.0; self.state_dim],
+                    variety_score: 0.0,
+                    similarity_limit: 0.62,
+                    decay_rate: 0.0015,
+                    fed_count: 3,
+                    pos: centroid_pos,
+                    co_bonds,
+                    time_bonds: Vec::new(),
+                    parent_id: None,
+                    child_ids,
+                    creb_excitability: 0.5,
+                    chromatin_locked: 0.6,
+                    synaptic_tag: 0.3,
+                    tag_med: 0.3,
+                    tag_slow: 0.3,
+                    erk_nuclear: 0.3,
+                    vesicle_ready: 1.0,
+                    receptor_w: centroid_pat.clone(),
+                    context_w: centroid_pat,
+                    axon_out_w: vec![0.0; self.state_dim],
+                    world_delta_w: vec![0.0; self.state_dim],
+                    somatic_feeling: 0.0,
+                    elig_action: [[0.25; 4]; 3],
+                    action_pending: 0.0,
+                    motor_action_w: [0.25; 4],
+                    failed_actions: [0.0; 4],
+                    vocal_motor_w: [0.5; 8],
+                };
+                self.cells.push(concept_cell);
+                break;
+            }
+        }
+    }
+
+    fn merge_near_duplicate_cells(&mut self) {
+        let start = self.basal_columns.min(self.cells.len());
+        let n = self.cells.len();
+        let mut merge_pair: Option<(usize, usize)> = None;
+        'outer: for i in start..n {
+            for j in (i + 1)..n {
+                let not_siblings = self.cells[i].parent_id.is_none()
+                    || self.cells[i].parent_id != self.cells[j].parent_id;
+                if not_siblings
+                    && self.cells[i].tissue_kind == self.cells[j].tissue_kind
+                    && self.cells[i].layer == self.cells[j].layer
+                    && dot(&self.cells[i].receptor_w, &self.cells[j].receptor_w) > self.merge_similarity_limit
+                {
+                    merge_pair = Some((i, j));
+                    break 'outer;
+                }
+            }
+        }
+        if let Some((keep_idx, drop_idx)) = merge_pair {
+            let keep_id = self.cells[keep_idx].id;
+            let drop_cell = self.cells.remove(drop_idx);
+            self.cells_merged += 1;
+            if let Some(k_idx) = self.find_cell_idx(keep_id) {
+                for d in 0..self.state_dim {
+                    self.cells[k_idx].receptor_w[d] =
+                        0.65 * self.cells[k_idx].receptor_w[d] + 0.35 * drop_cell.receptor_w[d];
+                }
+                normalize_l2_in_place(&mut self.cells[k_idx].receptor_w);
+                self.cells[k_idx].energy =
+                    (self.cells[k_idx].energy + 0.50 * drop_cell.energy).clamp(0.1, 1.9);
+                self.cells[k_idx].fed_count =
+                    self.cells[k_idx].fed_count.saturating_add(drop_cell.fed_count);
+                for (bid, bw) in drop_cell.co_bonds {
+                    self.cells[k_idx].add_or_strengthen_co_bond(bid, bw * 0.8);
+                }
+                for (tid, tw) in drop_cell.time_bonds {
+                    self.cells[k_idx].add_or_strengthen_time_bond(tid, tw * 0.8);
+                }
+            }
+            self.remap_removed_cell_bonds(drop_cell.id, Some(keep_id));
+        }
+    }
+
+    fn reap_starved_cells_with_handoff(&mut self) {
+        let start = self.basal_columns.min(self.cells.len());
+        if self.cells.len() <= start + 6 {
+            return;
+        }
+        let mut starved_idx: Option<usize> = None;
+        for (idx, c) in self.cells.iter().enumerate().skip(start) {
+            if c.energy <= 0.08 {
+                starved_idx = Some(idx);
+                break;
+            }
+        }
+        let total_e: f32 = self.cells.iter().skip(start).map(|c| c.energy).sum();
+        if starved_idx.is_none() && (total_e > self.total_energy_budget || self.cells.len() > self.max_cells) {
+            let mut min_e = f32::INFINITY;
+            for (idx, c) in self.cells.iter().enumerate().skip(start) {
+                if c.layer == 0 && c.energy < min_e {
+                    min_e = c.energy;
+                    starved_idx = Some(idx);
+                }
+            }
+        }
+        let Some(d_idx) = starved_idx else {
+            return;
+        };
+        let dying = self.cells.remove(d_idx);
+        self.cells_died_handoff += 1;
+
+        let mut best_neighbor_id: Option<u64> = dying
+            .co_bonds
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|x| x.0);
+        if best_neighbor_id.is_none() {
+            let mut best_sim = f32::NEG_INFINITY;
+            for c in self.cells.iter().skip(start) {
+                if c.tissue_kind == dying.tissue_kind {
+                    let s = dot(&c.receptor_w, &dying.receptor_w);
+                    if s > best_sim {
+                        best_sim = s;
+                        best_neighbor_id = Some(c.id);
+                    }
+                }
+            }
+        }
+
+        if let Some(n_id) = best_neighbor_id {
+            if let Some(n_idx) = self.find_cell_idx(n_id) {
+                for d in 0..self.state_dim {
+                    self.cells[n_idx].receptor_w[d] =
+                        0.85 * self.cells[n_idx].receptor_w[d] + 0.15 * dying.receptor_w[d];
+                }
+                normalize_l2_in_place(&mut self.cells[n_idx].receptor_w);
+                for (bid, bw) in &dying.co_bonds {
+                    if *bid != n_id {
+                        self.cells[n_idx].add_or_strengthen_co_bond(*bid, *bw * 0.70);
+                    }
+                }
+                for (tid, tw) in &dying.time_bonds {
+                    if *tid != n_id {
+                        self.cells[n_idx].add_or_strengthen_time_bond(*tid, *tw * 0.70);
+                    }
+                }
+            }
+        }
+        self.remap_removed_cell_bonds(dying.id, best_neighbor_id);
+    }
+
+    fn remap_removed_cell_bonds(&mut self, old_id: u64, replacement_id: Option<u64>) {
+        let start = self.basal_columns.min(self.cells.len());
+        for c in self.cells.iter_mut().skip(start) {
+            if let Some(rep) = replacement_id {
+                for (id, _) in &mut c.co_bonds {
+                    if *id == old_id {
+                        *id = rep;
+                    }
+                }
+                for (id, _) in &mut c.time_bonds {
+                    if *id == old_id {
+                        *id = rep;
+                    }
+                }
+            }
+            c.co_bonds.retain(|(id, _)| *id != old_id && *id != c.id);
+            c.time_bonds.retain(|(id, _)| *id != old_id && *id != c.id);
+        }
+        self.prev_active_cell_ids.retain(|&id| id != old_id);
+    }
+
+    /// Offline Dreaming across the Living `EpigeneticCell` population:
+    /// When there is no input, hungry cells poke their bonded neighbors, strengthen useful bonds,
+    /// prune weak ones, and form new insight bridges between 2-hop distant clusters.
+    pub fn dream_living_cells(&mut self, rounds: usize) -> usize {
+        let start = self.basal_columns.min(self.cells.len());
+        let mut new_bridges = 0usize;
+        for r in 0..rounds {
+            if self.cells.len() <= start + 2 {
+                break;
+            }
+            let mut best_idx = start;
+            let mut best_drive = f32::NEG_INFINITY;
+            let n_total = self.cells.len();
+            for idx in start..n_total {
+                if self.cells[idx].co_bonds.is_empty() {
+                    continue;
+                }
+                let fullness = self.cells[idx].fullness;
+                let energy = self.cells[idx].energy;
+                let n_bonds = self.cells[idx].co_bonds.len() as f32;
+                let noise = 0.20 * self.next_ion_fluctuation((idx + r * 13) as f32);
+                let drive = (1.0 - fullness) * energy + 0.15 * n_bonds + noise;
+                if drive > best_drive {
+                    best_drive = drive;
+                    best_idx = idx;
+                }
+            }
+
+            let poker_id = self.cells[best_idx].id;
+            let neighbors = self.cells[best_idx].co_bonds.clone();
+            for &(n1_id, w1) in neighbors.iter().take(4) {
+                self.cells[best_idx].add_or_strengthen_co_bond(n1_id, 0.04);
+                let Some(n1_idx) = self.find_cell_idx(n1_id) else {
+                    continue;
+                };
+                let n2_list = self.cells[n1_idx].co_bonds.clone();
+                for &(n2_id, w2) in n2_list.iter().take(3) {
+                    if n2_id == poker_id {
+                        continue;
+                    }
+                    let already_bonded = self.cells[best_idx].co_bonds.iter().any(|(id, _)| *id == n2_id);
+                    if !already_bonded && w1 * w2 > 0.12 {
+                        let bridge_w = (0.18 * (w1 * w2).sqrt()).clamp(0.05, 0.45);
+                        self.cells[best_idx].add_or_strengthen_co_bond(n2_id, bridge_w);
+                        if let Some(n2_idx) = self.find_cell_idx(n2_id) {
+                            self.cells[n2_idx].add_or_strengthen_co_bond(poker_id, bridge_w);
+                        }
+                        self.dream_bridges_formed += 1;
+                        new_bridges += 1;
+                    }
+                }
+            }
+
+            for c in self.cells.iter_mut().skip(start) {
+                c.co_bonds.retain(|(_, w)| *w >= 0.03);
+                c.time_bonds.retain(|(_, w)| *w >= 0.03);
+            }
+        }
+        new_bridges
+    }
+
+    pub fn living_type_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let start = self.basal_columns.min(self.cells.len());
+        let mut stm = 0usize;
+        let mut ltm = 0usize;
+        let mut concepts = 0usize;
+        let mut words = 0usize;
+        let mut meanings = 0usize;
+        for c in self.cells.iter().skip(start) {
+            if c.layer == 0 {
+                stm += 1;
+            } else if c.layer == 1 {
+                ltm += 1;
+            } else {
+                concepts += 1;
+            }
+            if c.tissue_kind == CELL_TISSUE_COCHLEA_WORD {
+                words += 1;
+            } else if c.tissue_kind == CELL_TISSUE_RETINA_MEANING {
+                meanings += 1;
+            }
+        }
+        (stm, ltm, concepts, words, meanings)
+    }
+
+    pub fn total_living_bonds(&self) -> (usize, usize) {
+        let start = self.basal_columns.min(self.cells.len());
+        let co: usize = self.cells.iter().skip(start).map(|c| c.co_bonds.len()).sum();
+        let tm: usize = self.cells.iter().skip(start).map(|c| c.time_bonds.len()).sum();
+        (co, tm)
     }
 }

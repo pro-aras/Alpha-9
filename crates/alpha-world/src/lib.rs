@@ -142,3 +142,103 @@ pub fn synthesize_word_utterance(word_id: usize, speaker_id: usize, voice_model_
     }
     pcm
 }
+
+/// Synthesize a connected 2-word 16 kHz spoken phrase (`word_a` followed by `word_b`)
+/// with a natural 50 ms inter-syllable trough so the organism's cochlear theta envelope
+/// segments both words naturally.
+pub fn synthesize_two_word_phrase(
+    word_a: usize,
+    word_b: usize,
+    speaker_id: usize,
+    voice_model_shift: f32,
+    rng: &mut Rng64,
+) -> Vec<f32> {
+    let pcm_a = synthesize_word_utterance(word_a, speaker_id, voice_model_shift, rng);
+    let pcm_b = synthesize_word_utterance(word_b, speaker_id, voice_model_shift, rng);
+    let mut out = Vec::with_capacity(pcm_a.len() + 800 + pcm_b.len());
+    out.extend_from_slice(&pcm_a);
+    out.resize(pcm_a.len() + 800, 0.0);
+    out.extend_from_slice(&pcm_b);
+    out
+}
+
+/// Literal Hardware Eyes (`/dev/video0`, e.g. Razer Kiyo):
+/// Captures a live 640x480 YUYV frame directly from `/dev/video0` in memory and transduces it
+/// into a 128x128 RGB retinal image (`width = 128, height = 128`).
+pub fn capture_hardware_eyes_rgb(video_dev: &str) -> Option<(Vec<u8>, u16, u16)> {
+    use std::process::Command;
+    let out = Command::new("v4l2-ctl")
+        .args([
+            "-d",
+            video_dev,
+            "--set-fmt-video=width=640,height=480,pixelformat=YUYV",
+            "--stream-mmap",
+            "--stream-count=1",
+            "--stream-to=-",
+        ])
+        .output()
+        .ok()?;
+    let yuyv = out.stdout;
+    if yuyv.len() < 640 * 480 * 2 {
+        return None;
+    }
+    let (dst_w, dst_h) = (128usize, 128usize);
+    let mut rgb = vec![0u8; dst_w * dst_h * 3];
+    for dy in 0..dst_h {
+        let sy = (dy * 480) / dst_h;
+        for dx in 0..dst_w {
+            let sx = (dx * 640) / dst_w;
+            let pair_idx = (sy * 640 + (sx & !1)) * 2;
+            let y_val = if (sx & 1) == 0 {
+                yuyv[pair_idx] as f32
+            } else {
+                yuyv[pair_idx + 2] as f32
+            };
+            let u_val = (yuyv[pair_idx + 1] as f32) - 128.0;
+            let v_val = (yuyv[pair_idx + 3] as f32) - 128.0;
+            let r = (y_val + 1.402 * v_val).clamp(0.0, 255.0) as u8;
+            let g = (y_val - 0.344136 * u_val - 0.714136 * v_val).clamp(0.0, 255.0) as u8;
+            let b = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
+            let p = (dy * dst_w + dx) * 3;
+            rgb[p] = r;
+            rgb[p + 1] = g;
+            rgb[p + 2] = b;
+        }
+    }
+    Some((rgb, dst_w as u16, dst_h as u16))
+}
+
+/// Literal Hardware Ears (`plughw:2,0`, Razer Kiyo USB Microphone):
+/// Captures live 16 kHz mono PCM audio from the physical USB microphone in memory.
+pub fn capture_hardware_ears_pcm_16khz(alsa_dev: &str, max_samples: usize) -> Option<Vec<f32>> {
+    use std::process::Command;
+    let out = Command::new("arecord")
+        .args([
+            "-q",
+            "-D",
+            alsa_dev,
+            "-f",
+            "S16_LE",
+            "-r",
+            "16000",
+            "-c",
+            "1",
+            "-t",
+            "raw",
+            "-d",
+            "1",
+        ])
+        .output()
+        .ok()?;
+    let raw = out.stdout;
+    if raw.len() < 2 {
+        return None;
+    }
+    let n = (raw.len() / 2).min(max_samples.max(1600));
+    let mut pcm = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = i16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+        pcm.push((s as f32) / 32768.0);
+    }
+    Some(pcm)
+}

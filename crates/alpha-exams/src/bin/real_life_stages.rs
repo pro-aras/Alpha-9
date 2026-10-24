@@ -14,8 +14,13 @@
 use alpha_iface::SensoryFrame;
 use alpha_organism::{
     Organism,
+    cognition::{CELL_TISSUE_COCHLEA_WORD, CELL_TISSUE_RETINA_MEANING, ModulationBroadcast},
     genome::Genome,
-    util::{dot, l2_norm},
+    util::{Rng64, dot, l2_norm},
+};
+use alpha_world::{
+    WorldObject, capture_hardware_ears_pcm_16khz, capture_hardware_eyes_rgb, render_scene,
+    synthesize_two_word_phrase, synthesize_word_utterance,
 };
 use std::fs;
 use std::io::Read;
@@ -30,7 +35,9 @@ struct RealUtterance {
 struct SceneObj {
     colour_id: usize,
     shape_id: usize,
+    #[allow(dead_code)]
     cx: f32,
+    #[allow(dead_code)]
     cy: f32,
 }
 
@@ -805,5 +812,396 @@ fn main() {
     println!("  8. Self-Organized Lexicon Prototypes           : {} word basins | RAM = {:.2} MB",
         child.binding.lexicon.len(),
         (child.memory_bytes() as f64) / (1024.0 * 1024.0));
+
+    // ========================================================================================
+    // STAGE 8: LIVING CELL ECOLOGY, 4-CHANNEL BRAIN-CELL GATE & 5 GROUNDED LANGUAGE STAGES
+    //   - Tests the converted living `EpigeneticCell` body/mind directly on:
+    //       * Living Cell Birth (Neurogenesis), Feeding, Fullness, Variety-Limit Mitosis
+    //         (Parent Concept + 2 Daughter Cells), Starvation Neighbor Handoff, Fusion,
+    //         3D Spatial Neighborhoods, and Dreaming Insight Bridges
+    //       * 4-Channel Brain<->Cell Interface (Cheap Cells vs Waking Brain on `unknown`)
+    //       * Language Stage 1: Word <-> Meaning Bonds
+    //       * Language Stage 2: Comprehension (Looking at Named Object in 4-Object Room)
+    //       * Language Stage 3: Unprompted First Words (Spontaneous Naming in Silent Room)
+    //       * Language Stage 4: Unseen Two-Word Combinations (`"want cat"` from `"want milk"` + `"want toy"`)
+    //       * Language Stage 5: Novel Use (Spontaneous Naming of Unseen Variant)
+    //       * Companion Organism (`Alpha` + `Companion` co-developing via 16 kHz audio)
+    //       * Literal Hardware Eyes (`/dev/video0`) & Hardware Ears (`plughw:2,0`)
+    // ========================================================================================
+    println!("\n[STAGE 8] LIVING CELL ECOLOGY, 4-CHANNEL WAKING-BRAIN GATE & 5 GROUNDED LANGUAGE STAGES");
+    let mut lang_rng = Rng64::new(0xA1F9_2026_7788_99AA);
+    let mut alpha_lang = Organism::new(Genome::default());
+    let mut companion = Organism::new(Genome {
+        seed: 0xC049_A110_5566_7788,
+        ..Genome::default()
+    });
+    companion.mind.merge_similarity_limit = 0.992;
+    for _ in 0..80 {
+        alpha_lang.babble_step(0.14);
+        companion.babble_step(0.14);
+    }
+
+    let obj_specs = [
+        (0usize, 0usize, 0usize, "ball"),
+        (1usize, 1usize, 1usize, "cup"),
+        (2usize, 2usize, 2usize, "cat"),
+        (3usize, 3usize, 3usize, "dog"),
+    ];
+    let mut single_rooms: Vec<Vec<u8>> = Vec::new();
+    for &(col, shp, _, _) in &obj_specs {
+        let objs = [WorldObject {
+            colour_id: col,
+            shape_id: shp,
+            cx: 64.0,
+            cy: 64.0,
+        }];
+        single_rooms.push(render_scene(&objs, &mut lang_rng).rgb);
+    }
+
+    // Newborn sensory & vocal tract self-calibration for Alpha and Companion
+    for i in 0..4 {
+        alpha_lang.develop_vision(&single_rooms[i], 128, 128);
+        companion.develop_vision(&single_rooms[i], 128, 128);
+    }
+    for w_dev in 0..10 {
+        let pcm_dev = synthesize_word_utterance(w_dev, w_dev % 4, 0.0, &mut lang_rng);
+        alpha_lang.develop_hearing(&pcm_dev);
+        companion.develop_hearing(&pcm_dev);
+    }
+    for _ in 0..120 {
+        alpha_lang.babble_step(0.14);
+        companion.babble_step(0.14);
+    }
+    // Calibrate Area Id4 (`vocal.w_inv`) on WA basal reconstructions (`wf_est`) across developmental
+    // words so `assembly_to_vocal_motor` produces dynamic onset->coda formant glides (`f1_start != f1_end`):
+    let mut cal_rng = Rng64::new(0x55AA_1234_9988_7766);
+    let in_dim = alpha_lang.wa.n_in;
+    for _epoch in 0..45 {
+        for w_dev in 0..10 {
+            let pcm_dev = synthesize_word_utterance(w_dev, _epoch % 4, 0.0, &mut cal_rng);
+            let (a_dev, _) = alpha_lang.hear_word(&pcm_dev, false);
+            let mut wf_est = vec![0.0f32; in_dim];
+            for u in 0..alpha_lang.wa.n_units.min(a_dev.len()) {
+                let act = a_dev[u];
+                if act > 0.0 {
+                    let row = &alpha_lang.wa.w_basal[u * in_dim..(u + 1) * in_dim];
+                    for (dst, &w) in wf_est.iter_mut().zip(row.iter()) {
+                        *dst += act * w;
+                    }
+                }
+            }
+            let target_m = [
+                ((w_dev as f32 * 0.23) % 0.80) + 0.10,
+                if w_dev % 2 == 0 { 0.12 + 0.06 * (w_dev as f32) } else { 0.88 - 0.06 * (w_dev as f32) },
+                if w_dev % 2 == 0 { 0.86 - 0.05 * (w_dev as f32) } else { 0.14 + 0.05 * (w_dev as f32) },
+                if (w_dev / 2) % 2 == 0 { 0.15 + 0.05 * (w_dev as f32) } else { 0.85 - 0.05 * (w_dev as f32) },
+                if (w_dev / 2) % 2 == 0 { 0.85 - 0.05 * (w_dev as f32) } else { 0.15 + 0.05 * (w_dev as f32) },
+                ((w_dev as f32 * 0.31) % 0.80) + 0.10,
+                0.45 + 0.04 * (w_dev as f32),
+                0.70,
+            ];
+            alpha_lang.vocal.learn_babble_pair(&wf_est, &target_m, 0.65);
+        }
+    }
+
+    // Language Stage 1: Word <-> Meaning Bonds + Co-Development with Companion Organism
+    for ep in 0..16 {
+        let spk = ep % 4;
+        let shift = (ep as f32 - 8.0) * 0.015;
+        for (i, &(_, _, wid, _)) in obj_specs.iter().enumerate() {
+            alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+            companion.body.state = [0.82, 0.98, 0.75, 0.78];
+            let pcm = synthesize_word_utterance(wid, spk, shift, &mut lang_rng);
+            let _ = alpha_lang.step(&SensoryFrame {
+                retina_rgb: &single_rooms[i],
+                width: 128,
+                height: 128,
+                pcm_16khz: &pcm,
+                body_flux: [0.06, 0.04, 0.08, 0.05],
+            });
+            // Alpha speaks about object `i` in the shared room; Companion sees object `i` and hears Alpha's voice!
+            alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+            let out_a_speak = alpha_lang.step(&SensoryFrame {
+                retina_rgb: &single_rooms[i],
+                width: 128,
+                height: 128,
+                pcm_16khz: &[],
+                body_flux: [0.02, 0.02, 0.04, 0.02],
+            });
+            if ep < 4 {
+                companion.develop_hearing(&out_a_speak.pcm_out);
+            } else {
+                let _ = companion.step(&SensoryFrame {
+                    retina_rgb: &single_rooms[i],
+                    width: 128,
+                    height: 128,
+                    pcm_16khz: &out_a_speak.pcm_out,
+                    body_flux: [0.06, 0.04, 0.08, 0.05],
+                });
+                let comp_start = companion.mind.basal_columns.min(companion.mind.cells.len());
+                for c in companion.mind.cells.iter_mut().skip(comp_start) {
+                    if c.tissue_kind == CELL_TISSUE_COCHLEA_WORD {
+                        c.similarity_limit = 0.92;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut stage1_hits = 0usize;
+    for (i, &(_, _, wid, _)) in obj_specs.iter().enumerate() {
+        let pcm_test = synthesize_word_utterance(wid, 5, 0.02, &mut lang_rng);
+        let (a_test, _) = alpha_lang.hear_word(&pcm_test, false);
+        let aud_vec = alpha_lang.mind.encode_auditory_state(&a_test);
+        let readout = alpha_lang.mind.read_living_cells(
+            None,
+            Some(&aud_vec),
+            None,
+            ModulationBroadcast::default(),
+        );
+        let (objs_i, _) = alpha_lang.perceive_objects(&single_rooms[i], 128, 128, false);
+        let target_m = alpha_lang.mind.encode_multimodal_state(&objs_i[0].s, &objs_i[0].c);
+        let mut best_k = 0usize;
+        let mut best_c = f32::NEG_INFINITY;
+        for k in 0..4 {
+            let (objs_k, _) = alpha_lang.perceive_objects(&single_rooms[k], 128, 128, false);
+            let m_k = alpha_lang.mind.encode_multimodal_state(&objs_k[0].s, &objs_k[0].c);
+            let c = dot(&readout.recalled_meaning, &m_k);
+            if c > best_c {
+                best_c = c;
+                best_k = k;
+            }
+        }
+        if best_k == i && dot(&readout.recalled_meaning, &target_m) > 0.40 {
+            stage1_hits += 1;
+        }
+    }
+
+    // Language Stage 2: Comprehension in 4-Object Room
+    let multi_objs = [
+        WorldObject { colour_id: 0, shape_id: 0, cx: 32.0, cy: 32.0 },
+        WorldObject { colour_id: 1, shape_id: 1, cx: 96.0, cy: 32.0 },
+        WorldObject { colour_id: 2, shape_id: 2, cx: 32.0, cy: 96.0 },
+        WorldObject { colour_id: 3, shape_id: 3, cx: 96.0, cy: 96.0 },
+    ];
+    let multi_room_rgb = render_scene(&multi_objs, &mut lang_rng).rgb;
+    let mut stage2_hits = 0usize;
+    for (i, &(_, _, wid, _)) in obj_specs.iter().enumerate() {
+        alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+        let pcm_cmd = synthesize_word_utterance(wid, 6, -0.02, &mut lang_rng);
+        let motor = alpha_lang.step(&SensoryFrame {
+            retina_rgb: &multi_room_rgb,
+            width: 128,
+            height: 128,
+            pcm_16khz: &pcm_cmd,
+            body_flux: [0.0; 4],
+        });
+        let target_gx = multi_objs[i].cx / 128.0;
+        let target_gy = multi_objs[i].cy / 128.0;
+        let d_target = ((motor.gaze_xy[0] - target_gx).powi(2)
+            + (motor.gaze_xy[1] - target_gy).powi(2))
+        .sqrt();
+        if d_target < 0.22 {
+            stage2_hits += 1;
+        }
+    }
+
+    // Language Stage 3: Unprompted First Words in Silent Room
+    let (comp_multi_perceived, _) = companion.perceive_objects(&multi_room_rgb, 128, 128, false);
+    let mut stage3_hits = 0usize;
+    let start_living = alpha_lang.mind.basal_columns.min(alpha_lang.mind.cells.len());
+    for i in 0..4 {
+        for c in alpha_lang.mind.cells.iter_mut().skip(start_living) {
+            c.fullness = 0.0;
+        }
+        alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+        let motor = alpha_lang.step(&SensoryFrame {
+            retina_rgb: &single_rooms[i],
+            width: 128,
+            height: 128,
+            pcm_16khz: &[],
+            body_flux: [0.0; 4],
+        });
+        if let Some(best_obj) = companion.attend_to_word(&motor.pcm_out, &comp_multi_perceived) {
+            if best_obj == i {
+                stage3_hits += 1;
+            }
+        }
+    }
+
+    // Language Stage 4: Unseen Two-Word Combination (`"want cat"` from `"want milk"` + `"want toy"`)
+    let word_want = 7usize;
+    let word_milk = 8usize;
+    let word_toy = 9usize;
+    let milk_rgb = render_scene(
+        &[WorldObject { colour_id: 4, shape_id: 4, cx: 64.0, cy: 64.0 }],
+        &mut lang_rng,
+    )
+    .rgb;
+    let toy_rgb = render_scene(
+        &[WorldObject { colour_id: 5, shape_id: 5, cx: 64.0, cy: 64.0 }],
+        &mut lang_rng,
+    )
+    .rgb;
+    for ep in 0..10 {
+        let spk = ep % 3;
+        alpha_lang.body.state = [0.32, 0.98, 0.75, 0.78];
+        let pcm_wm = synthesize_two_word_phrase(word_want, word_milk, spk, 0.0, &mut lang_rng);
+        let _ = alpha_lang.step(&SensoryFrame {
+            retina_rgb: &milk_rgb,
+            width: 128,
+            height: 128,
+            pcm_16khz: &pcm_wm,
+            body_flux: [0.18, 0.02, 0.08, 0.05],
+        });
+        alpha_lang.body.state = [0.32, 0.98, 0.75, 0.78];
+        let pcm_wt = synthesize_two_word_phrase(word_want, word_toy, spk, 0.0, &mut lang_rng);
+        let _ = alpha_lang.step(&SensoryFrame {
+            retina_rgb: &toy_rgb,
+            width: 128,
+            height: 128,
+            pcm_16khz: &pcm_wt,
+            body_flux: [0.18, 0.02, 0.08, 0.05],
+        });
+    }
+    let ref_want_pcm = synthesize_word_utterance(word_want, 1, 0.0, &mut lang_rng);
+    let (a_want_ref, _) = alpha_lang.hear_word(&ref_want_pcm, false);
+    let m_want_ref = alpha_lang.assembly_to_vocal_motor(&a_want_ref);
+
+    // Clear short-term fullness across word cells before testing unseen `"want cat"`
+    let start_living = alpha_lang.mind.basal_columns.min(alpha_lang.mind.cells.len());
+    for c in alpha_lang.mind.cells.iter_mut().skip(start_living) {
+        c.fullness = 0.0;
+    }
+    alpha_lang.body.state = [0.30, 0.98, 0.75, 0.78];
+    let motor_want_cat = alpha_lang.step(&SensoryFrame {
+        retina_rgb: &single_rooms[2], // Cat room (never paired with "want"!)
+        width: 128,
+        height: 128,
+        pcm_16khz: &[], // Complete silence!
+        body_flux: [-0.12, 0.0, 0.0, 0.0],
+    });
+    let is_two_syllables = motor_want_cat.pcm_out.len() >= 14000;
+    let single_len = (alpha_lang.genome.sr_hz * 45) / 100;
+    let syl1_pcm = &motor_want_cat.pcm_out[0..single_len.min(motor_want_cat.pcm_out.len())];
+    let syl2_start = (single_len + 800).min(motor_want_cat.pcm_out.len());
+    let syl2_pcm = &motor_want_cat.pcm_out[syl2_start..];
+    let (m_syl1, _) = alpha_lang.imitate_audio(syl1_pcm);
+    let cos_syl1_want = cos_sim(&m_syl1, &m_want_ref);
+    let syl2_attended = companion.attend_to_word(syl2_pcm, &comp_multi_perceived).unwrap_or(99);
+    let stage4_pass = is_two_syllables && cos_syl1_want > 0.75 && syl2_attended == 2;
+
+    // Language Stage 5: Novel Use + Companion Organism Audio Co-Regulation
+    let novel_cat_rgb = render_scene(
+        &[WorldObject { colour_id: 2, shape_id: 2, cx: 56.0, cy: 70.0 }],
+        &mut lang_rng,
+    )
+    .rgb;
+    let start_living = alpha_lang.mind.basal_columns.min(alpha_lang.mind.cells.len());
+    for c in alpha_lang.mind.cells.iter_mut().skip(start_living) {
+        c.fullness = 0.0;
+    }
+    alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+    let motor_novel = alpha_lang.step(&SensoryFrame {
+        retina_rgb: &novel_cat_rgb,
+        width: 128,
+        height: 128,
+        pcm_16khz: &[],
+        body_flux: [0.0; 4],
+    });
+    let novel_attended = companion.attend_to_word(&motor_novel.pcm_out, &comp_multi_perceived).unwrap_or(99);
+
+    // Feed varied cat/dog family instances to trigger natural Variety-Limit Mitosis (`cells_split`)
+    let mut base_cat = vec![0.0f32; 32];
+    for d in 0..32 {
+        base_cat[d] = if d % 3 == 0 { 0.85 } else { -0.25 };
+    }
+    for v in 0..12 {
+        let mut pat = base_cat.clone();
+        for d in 0..32 {
+            let osc = (((v * 7 + d * 5) % 19) as f32 / 9.5) - 1.0;
+            pat[d] += 0.50 * osc;
+        }
+        let _ = alpha_lang.mind.step_living_cells(
+            Some(&pat),
+            None,
+            None,
+            &[0.4, 0.2, 0.2, 0.2],
+            &[0.5; 8],
+            0.15,
+            ModulationBroadcast {
+                surprise: 0.25,
+                reward: 0.20,
+                danger: 0.0,
+                rest: 0.0,
+            },
+        );
+    }
+    let _ = alpha_lang.sleep_consolidate(16, 0.004);
+
+    // Verify 4-Channel Cheap-Cells vs Waking-Brain Gate
+    let cheap_before = alpha_lang.mind.cheap_cell_steps;
+    for i in 0..4 {
+        for _ in 0..3 {
+            alpha_lang.body.state = [0.82, 0.98, 0.75, 0.78];
+            let _ = alpha_lang.step(&SensoryFrame {
+                retina_rgb: &single_rooms[i],
+                width: 128,
+                height: 128,
+                pcm_16khz: &[],
+                body_flux: [0.01; 4],
+            });
+        }
+    }
+    let cheap_delta = alpha_lang.mind.cheap_cell_steps - cheap_before;
+    let (stm_c, ltm_c, concept_c, word_c, meaning_c) = alpha_lang.mind.living_type_counts();
+    let (co_bonds_n, time_bonds_n) = alpha_lang.mind.total_living_bonds();
+    println!(
+        "  Living Epigenetic Cells: born={} | split(Mitosis)={} | merged={} | died_handoff={} | dream_bridges={}",
+        alpha_lang.mind.cells_born,
+        alpha_lang.mind.cells_split,
+        alpha_lang.mind.cells_merged,
+        alpha_lang.mind.cells_died_handoff,
+        alpha_lang.mind.dream_bridges_formed
+    );
+    println!(
+        "  Cell Differentiation   : STM={} | LTM={} | Higher-Layer Concepts={} | Word Cells={} | Meaning Cells={} | co_bonds={} | time_bonds={}",
+        stm_c, ltm_c, concept_c, word_c, meaning_c, co_bonds_n, time_bonds_n
+    );
+    println!(
+        "  4-Channel Brain Gate   : Familiar Cheap-Cell steps={} | Waking-Brain steps={}",
+        cheap_delta, alpha_lang.mind.waking_brain_steps
+    );
+    println!(
+        "  5 Grounded Language Stages: S1(Bonds)={}/4 | S2(Comprehension)={}/4 | S3(First Words)={}/4 | S4(Unseen 'want cat')={} (len={}, want_cos={:.3}, syl2_obj={}) | S5(Novel Use -> Companion)=obj#{}",
+        stage1_hits,
+        stage2_hits,
+        stage3_hits,
+        if stage4_pass { "PASS" } else { "PARTIAL" },
+        motor_want_cat.pcm_out.len(),
+        cos_syl1_want,
+        syl2_attended,
+        novel_attended
+    );
+
+    // Live Hardware Eyes (`/dev/video0` Razer Kiyo) & Hardware Ears (`plughw:2,0` Razer Kiyo Mic)
+    if let Some((cam_rgb, cw, ch)) = capture_hardware_eyes_rgb("/dev/video0") {
+        let mic_pcm = capture_hardware_ears_pcm_16khz("plughw:2,0", 8000).unwrap_or_default();
+        let hw_motor = child.step(&SensoryFrame {
+            retina_rgb: &cam_rgb,
+            width: cw,
+            height: ch,
+            pcm_16khz: &mic_pcm,
+            body_flux: [0.02, 0.02, 0.03, 0.03],
+        });
+        let r_cnt = child.mind.cells.iter().filter(|c| c.tissue_kind == CELL_TISSUE_RETINA_MEANING).count();
+        let w_cnt = child.mind.cells.iter().filter(|c| c.tissue_kind == CELL_TISSUE_COCHLEA_WORD).count();
+        println!(
+            "  [Hardware Eyes `/dev/video0` ({}x{}) & Ears `plughw:2,0` ({} samples)] -> Gaze=({:.2}, {:.2}), Vocal=[{:.2}, {:.2}, {:.2}], RetinaCells={}, WordCells={}",
+            cw, ch, mic_pcm.len(), hw_motor.gaze_xy[0], hw_motor.gaze_xy[1],
+            hw_motor.vocal_tract[0], hw_motor.vocal_tract[1], hw_motor.vocal_tract[2],
+            r_cnt, w_cnt
+        );
+    }
     println!("==========================================================================================");
 }
