@@ -419,7 +419,11 @@ impl Organism {
         for a in &mut self.heatmap.atp {
             *a = (*a + 0.35).clamp(0.0, 1.0);
         }
-        self.body.state[0] = (self.body.state[0] + 0.20).clamp(0.0, 1.0);
+        for k in 0..4 {
+            self.body.state[k] = (self.body.state[k] + 0.35).clamp(0.0, self.body.set_point[k]);
+        }
+        self.body.distress = HomeostaticBody::compute_distress_for(&self.body.state, &self.body.set_point);
+        self.body.distress_prev = self.body.distress;
 
         // 2. Consolidate continuous eligibility trace into the recurrent experience chain fabric
         self.mind.consolidate_chain(0.08);
@@ -486,14 +490,12 @@ impl Organism {
     }
 
 
-    /// [S4] Grounded Spoken Naming: Given a perceived visual object, recall its bound word-form
-    /// assembly (`stream_mode`: 0=colour, 1=shape, 2=joint), invert to articulatory motor commands,
-    /// and synthesize a real 16 kHz spoken PCM waveform.
-    pub fn speak_object_attribute(&self, obj: &PerceivedObject, stream_mode: u8) -> (Vec<f32>, [f32; 8], Vec<f32>) {
-        let a_word = self.binding.recall_word_assembly(&obj.s, &obj.c, stream_mode);
+    /// Convert any auditory word assembly `a_word` (`WA` cortical state) into an 8D articulatory
+    /// motor trajectory via `WA` basal inversion + `Area Id4` (`self.vocal.infer_motor`).
+    pub fn assembly_to_vocal_motor(&self, a_word: &[f32]) -> [f32; 8] {
         let in_dim = self.wa.n_in;
         let mut wf_est = vec![0.0f32; in_dim];
-        for u in 0..self.wa.n_units {
+        for u in 0..self.wa.n_units.min(a_word.len()) {
             let act = a_word[u];
             if act <= 0.0 {
                 continue;
@@ -507,7 +509,15 @@ impl Organism {
             *dst = (*dst + m).max(0.0);
         }
         normalize_l2_in_place(&mut wf_est);
-        let motor = self.vocal.infer_motor(&wf_est);
+        self.vocal.infer_motor(&wf_est)
+    }
+
+    /// [S4] Grounded Spoken Naming: Given a perceived visual object, recall its bound word-form
+    /// assembly (`stream_mode`: 0=colour, 1=shape, 2=joint), invert to articulatory motor commands,
+    /// and synthesize a real 16 kHz spoken PCM waveform.
+    pub fn speak_object_attribute(&self, obj: &PerceivedObject, stream_mode: u8) -> (Vec<f32>, [f32; 8], Vec<f32>) {
+        let a_word = self.binding.recall_word_assembly(&obj.s, &obj.c, stream_mode);
+        let motor = self.assembly_to_vocal_motor(&a_word);
         let pcm = self.vocal.synthesize_pcm(&motor);
         (a_word, motor, pcm)
     }
@@ -639,6 +649,7 @@ impl Organism {
             (Vec::new(), Vec::new())
         };
 
+        let mut heard_assembly: Vec<f32> = Vec::new();
         if !frame.pcm_16khz.is_empty() {
             let (a_heard, is_novel) = self.hear_word(frame.pcm_16khz, true);
             if !objs_learned.is_empty() {
@@ -646,11 +657,37 @@ impl Organism {
                 let eff_eta = self.body.emotional_lr(self.genome.eta_bind);
                 self.binding.bind_experience(&a_heard, &objs_learned, &perm, eff_eta, is_novel);
             }
+            heard_assembly = a_heard;
         }
 
         let mut cortical_summary = vec![0.0f32; 32];
-        if let Some(att_obj) = objs_learned.get(attended_idx.min(objs_learned.len().saturating_sub(1))) {
-            cortical_summary = self.mind.encode_multimodal_state(&att_obj.s, &att_obj.c);
+        if !objs_learned.is_empty() {
+            let primary_st = self.mind.encode_multimodal_state(&objs_learned[0].s, &objs_learned[0].c);
+            let mut scene_gist = vec![0.0f32; 32];
+            for o in &objs_learned {
+                let st = self.mind.encode_multimodal_state(&o.s, &o.c);
+                for d in 0..32 {
+                    scene_gist[d] += st[d];
+                }
+            }
+            normalize_l2_in_place(&mut scene_gist[0..16]);
+            normalize_l2_in_place(&mut scene_gist[16..32]);
+            for d in 0..32 {
+                cortical_summary[d] = 0.76 * primary_st[d] + 0.24 * scene_gist[d];
+            }
+            normalize_l2_in_place(&mut cortical_summary[0..16]);
+            normalize_l2_in_place(&mut cortical_summary[16..32]);
+            normalize_l2_in_place(&mut cortical_summary);
+            if !heard_assembly.is_empty() {
+                let aud_st = self.mind.encode_auditory_state(&heard_assembly);
+                for d in 0..32 {
+                    cortical_summary[d] = 0.72 * cortical_summary[d] + 0.28 * aud_st[d];
+                }
+                normalize_l2_in_place(&mut cortical_summary);
+            }
+        } else if !heard_assembly.is_empty() {
+            // Pure auditory conversation / spoken prompt in the absence of visual objects
+            cortical_summary = self.mind.encode_auditory_state(&heard_assembly);
         } else if objs_now.is_empty() && frame.pcm_16khz.is_empty() {
             // In a dark, silent room, spontaneous cellular engram replay (dreaming/thinking) ignites!
             cortical_summary = self.mind.spontaneous_replay_step(0.08);
@@ -682,11 +719,9 @@ impl Organism {
         let flow = self.mind.advance_experience_chain(&cortical_summary, valence, arousal, 0.14).to_vec();
 
         // Subvocal motor-auditory calibration + natural vocalization shaped by object,
-        // similarity/difference subspace, muscle cell adaptation, and ion-channel exploration
+        // conversational speech input, similarity/difference subspace, and muscle cell adaptation
         self.babble_step(0.08);
         if let Some(att_obj) = objs_now.get(attended_idx) {
-            // Choose whether to articulate Colour (0) or Shape (1) based on which subspace
-            // carries stronger differential novelty or resonance in the cellular comparator
             let shp_diff = l2_norm(&self.mind.last_difference_vec[0..16]);
             let col_diff = l2_norm(&self.mind.last_difference_vec[16..32]);
             let attr_kind = if shp_diff > col_diff * 1.15 { 1 } else { 0 };
@@ -710,41 +745,84 @@ impl Organism {
             let pcm_out = self.vocal.synthesize_pcm(&m_grounded);
             motor.vocal_tract = m_grounded;
             motor.pcm_out = pcm_out;
-        } else {
-            // Subvocal murmur during quiet dreaming/replay
-            let mut m_dream = self.mind.muscle_cells;
+        } else if !heard_assembly.is_empty() {
+            // Conversational vocal response when spoken to without visual objects:
+            // Combines auditory-motor echo (`Area Id4`) with recalled cellular vocal synergy (`last_recalled_vocal`)
+            let m_echo = self.assembly_to_vocal_motor(&heard_assembly);
+            let mut m_resp = [0.0f32; 8];
             for d in 0..8 {
-                m_dream[d] = (m_dream[d]
+                let flow_mod = 0.08 * flow.get(d * 3).copied().unwrap_or(0.0);
+                m_resp[d] = (0.68 * m_echo[d]
+                    + 0.22 * self.mind.last_recalled_vocal[d]
+                    + 0.10 * self.mind.muscle_cells[d]
+                    + flow_mod)
+                    .clamp(0.0, 1.0);
+            }
+            let pcm_out = self.vocal.synthesize_pcm(&m_resp);
+            motor.vocal_tract = m_resp;
+            motor.pcm_out = pcm_out;
+        } else {
+            // Subvocal murmur / spontaneous vocalization during quiet rest or after a conversational prompt
+            let mut m_dream = self.mind.last_recalled_vocal;
+            for d in 0..8 {
+                m_dream[d] = (0.60 * m_dream[d]
+                    + 0.30 * self.mind.muscle_cells[d]
                     + 0.10 * flow.get(d * 4).copied().unwrap_or(0.0)
                     + 0.03 * self.mind.next_ion_fluctuation(d as f32))
                 .clamp(0.0, 1.0);
             }
             motor.vocal_tract = m_dream;
+            motor.pcm_out = self.vocal.synthesize_pcm(&m_dream);
         }
 
-        // Step whole-body organ and muscle cell intracellular memory
-        self.mind.step_whole_body_cells(&cortical_summary, valence, arousal, &motor.vocal_tract);
-
-        // Continuous motor action drive emerging from homeostatic need + cellular feeling + experience wave:
-        // action_drive[0]: approach/reach (boosted by positive recalled cellular feeling, inhibited by pain recall)
-        // action_drive[1]: withdraw/avoid (boosted by negative recalled cellular feeling / trauma warning!)
+        // Continuous motor action drive emerging from:
+        // 1. Multi-horizon D1/D2 recalled cellular action synergy (`last_recalled_action`, for puzzles & tools)
+        // 2. Peripheral limb proprioceptive cell baseline (`limb_cells`)
+        // 3. Homeostatic need + cellular feeling (`approach` vs `withdraw/avoid`) + exploratory ion noise
         let recall_feel = if self.mind.last_recalled_feeling.abs() >= attended_recalled_feeling.abs() {
             self.mind.last_recalled_feeling
         } else {
             attended_recalled_feeling
         };
+        let act_max = self
+            .mind
+            .last_recalled_action
+            .iter()
+            .copied()
+            .fold(0.0f32, f32::max);
+        let act_min = self
+            .mind
+            .last_recalled_action
+            .iter()
+            .copied()
+            .fold(1.0f32, f32::min);
+        let unspecialized = (1.0 - (act_max - act_min) * 1.8).clamp(0.0, 1.0);
         for d in 0..4 {
-            let homeo_need = (self.body.set_point[d] - self.body.state[d]).max(0.0);
-            let wave_drive = (flow[d * 4] + flow[16 + d * 4]).max(0.0) * 0.25;
+            let homeo_need = (self.body.set_point[d] - self.body.state[d]).max(0.0) * 0.20 * unspecialized;
+            let wave_drive = (flow[d * 4] + flow[16 + d * 4]).max(0.0) * 0.08 * unspecialized;
+            let learned_act = 0.88 * self.mind.last_recalled_action[d]
+                + 0.12 * self.mind.limb_cells[d] * unspecialized;
             let cell_affect = if d == 0 {
-                recall_feel * 0.75
+                recall_feel.max(0.0) * 0.35 * unspecialized
             } else if d == 1 {
-                (-recall_feel).max(0.0) * 1.15
+                let burn_reflex = if recall_feel < -0.45 { 1.0 } else { unspecialized };
+                (recall_feel + 0.30).min(0.0).abs() * 0.95 * burn_reflex
             } else {
                 0.0
             };
-            motor.action_drive[d] = (homeo_need + wave_drive + cell_affect).clamp(0.0, 2.0);
+            let act_explore = 0.02 * self.mind.next_ion_fluctuation((d as f32) + arousal) * unspecialized;
+            motor.action_drive[d] = (homeo_need + wave_drive + learned_act + cell_affect + act_explore).clamp(0.0, 2.0);
         }
+
+        // Step all 5 peripheral somatic cellular tissues (`retina`, `cochlea`, `limb`, `organ`, `muscle`)
+        self.mind.step_whole_body_cells(
+            &cortical_summary,
+            &heard_assembly,
+            valence,
+            arousal,
+            &motor.action_drive,
+            &motor.vocal_tract,
+        );
 
         if self.body.state[0] < 0.22 {
             let _ = self.sleep_consolidate(16, 0.005);

@@ -129,7 +129,7 @@ impl HomeostaticBody {
     pub fn compute_distress_for(state: &[f32; 4], set_point: &[f32; 4]) -> f32 {
         let mut d = 0.0f32;
         for i in 0..4 {
-            let diff = state[i] - set_point[i];
+            let diff = (set_point[i] - state[i]).max(0.0);
             d += diff * diff;
         }
         d
@@ -147,10 +147,10 @@ impl HomeostaticBody {
         top_down_reappraisal: f32,
     ) -> (f32, f32) {
         let spike_cost = 0.015 * spike_fraction;
-        self.state[0] = (self.state[0] - self.basal_drain - spike_cost + flux[0]).clamp(0.0, 1.2);
-        self.state[1] = (self.state[1] - 0.5 * self.basal_drain + flux[1]).clamp(0.0, 1.2);
-        self.state[2] = (self.state[2] - 0.8 * self.basal_drain + flux[2]).clamp(0.0, 1.2);
-        self.state[3] = (self.state[3] - 0.4 * self.basal_drain + flux[3]).clamp(0.0, 1.2);
+        self.state[0] = (self.state[0] - self.basal_drain - spike_cost + flux[0]).clamp(0.0, self.set_point[0]);
+        self.state[1] = (self.state[1] - 0.5 * self.basal_drain + flux[1]).clamp(0.0, self.set_point[1]);
+        self.state[2] = (self.state[2] - 0.8 * self.basal_drain + flux[2]).clamp(0.0, self.set_point[2]);
+        self.state[3] = (self.state[3] - 0.4 * self.basal_drain + flux[3]).clamp(0.0, self.set_point[3]);
 
         let thermal_err = (self.set_point[1] - self.state[1]).max(0.0);
         let energy_err = (self.set_point[0] - self.state[0]).max(0.0);
@@ -166,7 +166,14 @@ impl HomeostaticBody {
 
         let raw_d = Self::compute_distress_for(&self.state, &self.set_point);
         let d = (0.75 * raw_d + 0.25 * felt_visceral * felt_visceral).max(0.0);
-        self.valence = self.distress_prev - d;
+        let mean_flux = 0.25 * (flux[0] + flux[1] + flux[2] + flux[3]);
+        let phasic = if mean_flux.abs() > 0.02 { 0.65 * mean_flux } else { 0.0 };
+        let delta_d = if mean_flux.abs() <= 0.02 {
+            (self.distress_prev - d).clamp(-0.02, 0.02)
+        } else {
+            self.distress_prev - d
+        };
+        self.valence = delta_d + phasic;
         self.arousal = self.valence.abs() + 0.35 * surprise + 0.15 * action_switch;
         self.distress_prev = d;
         self.distress = d;
