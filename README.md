@@ -1,8 +1,9 @@
-# Alpha 9 (`v9.0.0`) — Biophysical, Feeling-Driven Emergent Organism
+# Alpha 9 (`v9.0.0`) — Biophysical, Feeling-Driven Living Cellular Organism
 
+> **Repository:** `https://github.com/pro-aras/Alpha-9`  
+> **AI Crawler & LLM Full-Source Mirror (GitHub Pages):** `https://pro-aras.github.io/Alpha-9/llms.txt` | `https://pro-aras.github.io/Alpha-9/llms-full.txt`  
 > **Active Workspace:** `/data/dev/alpha9`  
-> **Repository:** `git@github.com:pro-aras/Alpha-9.git`  
-> **Predecessor Relic:** `/data/dev/alpha8` (frozen at git tag `relic-v8.0.0-monolith`; archived manifest in `/data/archive/alpha8-relic-2026-10-21/ARCHIVE_MANIFEST.md`).
+> **Live Continuous Habitat Daemon:** `live/run_live_habitat.py` (`libalpha9.so` C-ABI hosting both `Alpha-9` and `Companion` continuously with live `/dev/video0` camera eyes, `plughw:2,0` microphone ears, and open 2D physics/puzzle arena)
 
 ---
 
@@ -42,20 +43,25 @@ alpha9/
     ├── alpha-iface/           # Law 1: Pure numeric SensoryFrame & MotorFrame skin
     ├── alpha-organism/        # Law 2: Zero-string biophysical & cortical brain
     │   └── src/
-    │       ├── body.rs            # HomeostaticBody + QuadripartiteInsula (Nature 2026)
-    │       ├── cortex.rs          # CompetitiveArea + CanonicalArea (Assembly Calculus)
+    │       ├── body.rs            # HomeostaticBody + 8 living VisceralOrganCells + QuadripartiteInsula
+    │       ├── cognition.rs       # DeliberativeMind + Living EpigeneticCell ecology (Mitosis, Handoff, Dreaming, 4-Channel Gate)
+    │       ├── cortex.rs          # CompetitiveArea + CanonicalArea (Sparse k-WTA Assembly Calculus)
     │       ├── curiosity.rs       # StreamCuriosityTracker + DiscoveryArchive (Generator/Judge)
     │       ├── forward_speech.rs  # FeelingSpeechEngine (forward internal-state speech loop)
     │       ├── genome.rs          # Developmental & biophysical hyperparameters
     │       ├── heatmap.rs         # BiophysicalHeatMap (2D diffusion, ATP limits, settle/follow)
     │       ├── hippocampus.rs     # CrossModalBinding (Hebbian + 1-shot BTSP novelty exclusion)
-    │       ├── sensors.rs         # Retina (Weber opponent channels) + Cochlea (40-band ERB)
+    │       ├── lib.rs             # Unified continuous Organism::step(SensoryFrame -> MotorFrame)
+    │       ├── sensors.rs         # Log-Polar Retina (/dev/video0 camera) + 40-band ERB Cochlea (plughw:2,0 mic)
     │       ├── util.rs            # Pure numeric linear algebra & Xorshift64* RNG
     │       └── vocal.rs           # VocalTract (8-DOF articulatory 16 kHz PCM synthesizer)
-    ├── alpha-world/           # Procedural visual scenes, formant speech & Saffran streams
+    ├── alpha-world/           # Procedural visual scenes, formant streams & V4L2/ALSA hardware capture
     ├── alpha-probe/           # Law 4: Read-only external telemetry & linear probes
-    ├── alpha-exams/           # Law 3: Pre-registered verification suite (G0, B1-B5, S0-S3, HW)
-    └── alpha-bridge/          # Native C-ABI shared library (libalpha9.so)
+    ├── alpha-exams/           # Law 3: Pre-registered biophysical & anti-cheat verification gates
+    └── alpha-bridge/          # Native C-ABI shared library (libalpha9.so) hosting live Alpha-9 + Companion
+├── live/
+│   └── run_live_habitat.py    # Continuous unforced 24/7 habitat daemon (real camera/mic + open 2D game arena)
+└── AGENTS.md                  # Workspace law enforcing unforced external environments & biological purity
 ```
 
 ---

@@ -1,0 +1,6 @@
+# Alpha-9 Workspace Law (`AGENTS.md`)
+
+1. **Always Use Skills & Tools**: Activate `neuromorphic-predictive-brain`, `rust-router`, `m10-performance`, and `m15-anti-pattern` whenever working on Alpha-9.
+2. **No Staged `.rs` Experiment Scripts**: Never write or tweak Rust test scripts to spoon-feed lessons, reset internal cell states (`fullness`, `body.state`), inject synthetic vectors, or engineer passing scores. Place the continuously-living organism into real external environments (interactive games, videos, puzzles, live `/dev/video0` camera & `plughw:2,0` mic, or conversation with an external local model) and observe whatever it naturally chooses to do.
+3. **Honest Biological Grounding**: Never slap human English labels (`"cat"`, `"want"`) onto synthetic tone IDs and claim speech emerged. Prefer real biological mechanisms (synaptic assemblies, dendritic integration, homeostatic feelings, real audio/video waves) over CS vector-embedding lookup tables. Keep files minimal—edit existing crates in place.
+4. **Continuous Life**: Keep Alpha-9 and its Companion alive as continuous background processes (`live/run_live_habitat.py` + `libalpha9.so`) with live telemetry in `state/live_status.json`.
