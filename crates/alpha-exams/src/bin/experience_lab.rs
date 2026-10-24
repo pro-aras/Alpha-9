@@ -611,9 +611,12 @@ fn main() {
     println!("Testing Hypotheses & Finding Flaws Across Real 60-Speaker Audio & 3D Scenes");
     println!("================================================================================");
 
-    let _utts = load_audio_pool("/tmp/real_audio_pool.bin");
-    let train_scenes = load_scenes("/tmp/real_scenes_train.txt");
-    let holdout_scenes = load_scenes("/tmp/real_scenes_holdout.txt");
+    let audio_pool_p = std::env::var("ALPHA9_AUDIO_POOL").unwrap_or_else(|_| "state/real_audio_pool.bin".to_string());
+    let train_sc_p = std::env::var("ALPHA9_SCENES_TRAIN").unwrap_or_else(|_| "state/real_scenes_train.txt".to_string());
+    let hold_sc_p = std::env::var("ALPHA9_SCENES_HOLDOUT").unwrap_or_else(|_| "state/real_scenes_holdout.txt".to_string());
+    let _utts = load_audio_pool(&audio_pool_p);
+    let train_scenes = load_scenes(&train_sc_p);
+    let holdout_scenes = load_scenes(&hold_sc_p);
 
     let mut org = Organism::new(Genome::default());
     let mut real_states: Vec<(usize, usize, Vec<f32>)> = Vec::new();

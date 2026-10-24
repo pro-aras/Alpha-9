@@ -1,0 +1,18 @@
+# Alpha-9: Pure Rust Biophysical Emergent Organism
+
+> Repository: https://github.com/pro-aras/Alpha-9
+> Language: Pure Rust (zero external ML frameworks, zero LLMs inside the organism core, zero English string lookup tables)
+
+## Overview
+Alpha-9 is an artificial life (ALife) cognitive organism written in pure Rust (`~19.15 MB` heap per organism, `<32 MB` hardware ceiling). Instead of top-down rules or static neural network weights, the entire body and mind are composed of living cells that metabolize prediction accuracy, split under high variance, hand off traits to neighbors before dying, and cluster in 3D space through co-activation bonds.
+
+## Crate Architecture
+- `crates/alpha-core`: Homeostatic physiological drives (`atp`, `hydration`, `thermal_comfort`, `Cleanliness`, `curiosity`, `social_bond`, `cognitive_load`), perceptual field, and motor channels (`locomotion`, `foveal_gaze`, `effector_reach`, `vocal_tract`, `internal_focus`).
+- `crates/alpha-organism`:
+  - `body.rs`: `HomeostaticBody` driven by 7 living `VisceralOrganCell` populations (`MetabolicLiver`, `RenalOsmotic`, `ThermoregulatorySkin`, `ImmuneBarrier`, `ExploratoryVagus`, `OxytocinSocial`, `GlialClearance`) coupled with a dynamical 2D Formant Vocal Tract (`f0`, `f1`, `f2`, `energy`).
+  - `brain.rs`: Multi-compartment leaky-integrate-and-fire (LIF) dendritic predictive hierarchy (`L1` sensory, `L2` associative, `L3` prefrontal) with short-term synaptic depression/facilitation and three-factor Behavioral Timescale Synaptic Plasticity (BTSP).
+  - `cognition.rs`: `DeliberativeMind` living `EpigeneticCell` ecology (up to 448 cells, fast exploratory vs. slow consolidated phenotypes, hunger/fullness homeostat, mitosis, apoptotic neighbor handoff, fusion, 3D spatial clustering, dream consolidation bridges, and cheap-cell vs. waking-brain novelty gating).
+  - `genome.rs` & `plasticity.rs`: Heritable `BrainGenome` and physiological homeostatic setpoints.
+- `crates/alpha-world`: Open sensory arena (`SensoryArena`), procedural ecological physics (`DevelopmentalWorld`), and optional opt-in external stream ingestion via environment variables.
+- `crates/alpha-bridge`: C-ABI shared library (`libalpha9.so`) exposing `alpha9_bridge_step` and `alpha9_bridge_step_pair` so `Alpha-9` and its `Companion` run continuously side-by-side in external games, puzzles, or sensory streams (`live/run_live_habitat.py`).
+- `crates/alpha-exams`: Automated biophysical integrity verification (`[G0]` zero hardcoded English vocabulary strings in `alpha-organism`, `[HW]` `<= 32 MB` memory ceiling, `[G1]`-`[G15]` physiological & plastic invariants).

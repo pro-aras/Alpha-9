@@ -3,3 +3,17 @@
 *.swp
 .DS_Store
 /state
+.env
+.env.*
+*.log
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.ppm
+*.wav
+*.pcm
+*.bin

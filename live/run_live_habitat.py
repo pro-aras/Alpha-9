@@ -3,11 +3,10 @@
 Continuous Unforced Live Habitat & Open 2D Physics/Puzzle Game Arena for Alpha-9 + Companion.
 - Loads native `target/release/libalpha9.so` (`alpha9_bridge_step_pair`).
 - Never resets, never scripts lessons, and never forces outputs.
-- Combines live hardware eyes (`/dev/video0`) + ears (`plughw:2,0`) with an open 2D 128x128
-  foraging & switch-door game arena where Alpha-9 and Companion move, ignore, explore, or solve
-  puzzles purely by their own `action_drive` and `gaze_xy` choices, and optionally converse
-  with a local Ollama friend model if present.
-- Writes live telemetry every 5 ticks to `/data/dev/alpha9/state/live_status.json`.
+- External video/audio sources (`ALPHA9_VIDEO_SOURCE`, `ALPHA9_AUDIO_SOURCE`) are strictly opt-in
+  via a local gitignored `.env` file and disabled by default so zero private hardware feeds are touched
+  unless explicitly configured locally.
+- Writes live telemetry every 5 ticks to `state/live_status.json` (gitignored).
 """
 
 import ctypes
@@ -15,13 +14,32 @@ import json
 import math
 import os
 import random
+import struct
 import subprocess
 import time
-import urllib.request
 
-ROOT = "/data/dev/alpha9"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_PATH = os.path.join(ROOT, "target", "release", "libalpha9.so")
 STATUS_PATH = os.path.join(ROOT, "state", "live_status.json")
+ENV_PATH = os.path.join(ROOT, ".env")
+
+
+def load_local_env():
+    if not os.path.isfile(ENV_PATH):
+        return
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except Exception:
+        pass
+
+
+load_local_env()
 
 lib = ctypes.CDLL(LIB_PATH)
 lib.alpha9_bridge_init.restype = ctypes.c_void_p
@@ -47,21 +65,20 @@ def call_c_json(ptr):
     return json.loads(raw)
 
 
-def capture_camera_128():
-    if not os.path.exists("/dev/video0"):
+def capture_opt_in_video_128():
+    src = os.environ.get("ALPHA9_VIDEO_SOURCE", "").strip()
+    if not src:
         return None
     try:
-        p = subprocess.run(
-            [
-                "ffmpeg", "-nostdin", "-loglevel", "quiet",
-                "-f", "v4l2", "-i", "/dev/video0",
-                "-frames:v", "1", "-vf", "scale=128:128",
-                "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=1.5,
-        )
+        cmd = ["ffmpeg", "-nostdin", "-loglevel", "quiet"]
+        if src.startswith("/dev/"):
+            cmd += ["-f", "v4l2"]
+        cmd += [
+            "-i", src,
+            "-frames:v", "1", "-vf", "scale=128:128",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=1.5)
         if len(p.stdout) == 128 * 128 * 3:
             return bytearray(p.stdout)
     except Exception:
@@ -69,12 +86,15 @@ def capture_camera_128():
     return None
 
 
-def capture_mic_16k(duration_sec=0.35):
+def capture_opt_in_audio_16k(duration_sec=0.30):
+    src = os.environ.get("ALPHA9_AUDIO_SOURCE", "").strip()
+    if not src:
+        return []
     try:
         n_samples = int(16000 * duration_sec)
         p = subprocess.run(
             [
-                "arecord", "-q", "-D", "plughw:2,0",
+                "arecord", "-q", "-D", src,
                 "-f", "S16_LE", "-r", "16000", "-c", "1",
                 "-s", str(n_samples), "-t", "raw",
             ],
@@ -84,7 +104,6 @@ def capture_mic_16k(duration_sec=0.35):
         )
         raw = p.stdout
         if len(raw) >= 3200:
-            import struct
             cnt = len(raw) // 2
             ints = struct.unpack(f"<{cnt}h", raw[: cnt * 2])
             return [x / 32768.0 for x in ints]
@@ -97,7 +116,7 @@ class OpenWorldGameArena:
     """
     Unscripted 128x128 2D world with:
       - Nutrient fruit (green circle) that regrows naturally elsewhere when eaten
-      - Hot hazard ember (red diamond) that drifts slowly
+      - Drifting hazard ember (red circle)
       - Mechanical switch (gold square) that unlocks a blue treasure chest for 25 ticks
       - Alpha-9 avatar (cyan) & Companion avatar (magenta) moved ONLY by their own action_drive!
     """
@@ -116,7 +135,6 @@ class OpenWorldGameArena:
         self.chests_opened = 0
 
     def step_physics(self, a_act, c_act):
-        # Action drives [0: right/east, 1: left/west, 2: down/south, 3: up/north]
         self.ax = max(10.0, min(118.0, self.ax + 4.5 * (a_act[0] - a_act[1])))
         self.ay = max(10.0, min(118.0, self.ay + 4.5 * (a_act[2] - a_act[3])))
         self.cx = max(10.0, min(118.0, self.cx + 4.5 * (c_act[0] - c_act[1])))
@@ -135,12 +153,10 @@ class OpenWorldGameArena:
         a_flux = [0.002, 0.002, 0.0, 0.0]
         c_flux = [0.002, 0.002, 0.0, 0.0]
 
-        # Social proximity warmth when Alpha and Companion choose to stay near each other
         if math.hypot(self.ax - self.cx, self.ay - self.cy) < 24.0:
             a_flux[2] += 0.025
             c_flux[2] += 0.025
 
-        # Nutrient fruit
         if math.hypot(self.ax - self.food_x, self.ay - self.food_y) < 15.0:
             a_flux[0] += 0.14
             self.alpha_fruits += 1
@@ -152,13 +168,11 @@ class OpenWorldGameArena:
             self.food_x = random.uniform(18.0, 110.0)
             self.food_y = random.uniform(18.0, 110.0)
 
-        # Drifting hot ember hazard
         if math.hypot(self.ax - self.ember_x, self.ay - self.ember_y) < 14.0:
             a_flux[1] -= 0.12
         if math.hypot(self.cx - self.ember_x, self.cy - self.ember_y) < 14.0:
             c_flux[1] -= 0.12
 
-        # 2-part open puzzle: stepping on gold switch unlocks blue chest for 25 ticks
         if (
             math.hypot(self.ax - self.switch_x, self.ay - self.switch_y) < 15.0
             or math.hypot(self.cx - self.switch_x, self.cy - self.switch_y) < 15.0
@@ -183,10 +197,9 @@ class OpenWorldGameArena:
 
         return a_flux, c_flux
 
-    def render_rgb_128(self, cam_bg=None):
-        if cam_bg is not None and len(cam_bg) == 128 * 128 * 3:
-            # Blend real camera room (45%) with game arena entities so Alpha sees BOTH real room + game!
-            buf = bytearray(int(b * 0.45) for b in cam_bg)
+    def render_rgb_128(self, ext_bg=None):
+        if ext_bg is not None and len(ext_bg) == 128 * 128 * 3:
+            buf = bytearray(int(b * 0.45) for b in ext_bg)
         else:
             buf = bytearray([28, 30, 36] * (128 * 128))
 
@@ -227,24 +240,24 @@ def main():
     arena = OpenWorldGameArena()
     a_act = [0.25, 0.25, 0.25, 0.25]
     c_act = [0.25, 0.25, 0.25, 0.25]
-    cam_frame = None
+    ext_frame = None
     tick = 0
 
     while True:
         tick += 1
-        if tick % 12 == 1:
-            fresh_cam = capture_camera_128()
-            if fresh_cam is not None:
-                cam_frame = fresh_cam
+        if tick % 20 == 1:
+            fresh = capture_opt_in_video_128()
+            if fresh is not None:
+                ext_frame = fresh
 
-        mic_pcm = capture_mic_16k(0.25) if (tick % 15 == 2) else []
+        ext_pcm = capture_opt_in_audio_16k(0.25) if (tick % 25 == 2) else []
         a_flux, c_flux = arena.step_physics(a_act, c_act)
-        rgb = arena.render_rgb_128(cam_frame)
+        rgb = arena.render_rgb_128(ext_frame)
 
         rgb_arr = (ctypes.c_uint8 * len(rgb)).from_buffer(rgb)
-        if mic_pcm:
-            pcm_arr = (ctypes.c_float * len(mic_pcm))(*mic_pcm)
-            pcm_len = len(mic_pcm)
+        if ext_pcm:
+            pcm_arr = (ctypes.c_float * len(ext_pcm))(*ext_pcm)
+            pcm_len = len(ext_pcm)
         else:
             pcm_arr = None
             pcm_len = 0
@@ -266,7 +279,7 @@ def main():
             payload = {
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "live_daemon_running": True,
-                "camera_connected": cam_frame is not None,
+                "external_video_opt_in": bool(os.environ.get("ALPHA9_VIDEO_SOURCE", "").strip()),
                 "init": init_info,
                 "arena": {
                     "alpha_pos": [round(arena.ax, 1), round(arena.ay, 1)],
@@ -279,7 +292,7 @@ def main():
                 "organisms": res,
             }
             tmp_p = STATUS_PATH + ".tmp"
-            with open(tmp_p, "w") as f:
+            with open(tmp_p, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
             os.replace(tmp_p, STATUS_PATH)
 

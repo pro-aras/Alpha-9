@@ -1,9 +1,8 @@
 # Alpha 9 (`v9.0.0`) — Biophysical, Feeling-Driven Living Cellular Organism
 
 > **Repository:** `https://github.com/pro-aras/Alpha-9`  
-> **AI Crawler & LLM Full-Source Mirror (GitHub Pages):** `https://pro-aras.github.io/Alpha-9/llms.txt` | `https://pro-aras.github.io/Alpha-9/llms-full.txt`  
-> **Active Workspace:** `/data/dev/alpha9`  
-> **Live Continuous Habitat Daemon:** `live/run_live_habitat.py` (`libalpha9.so` C-ABI hosting both `Alpha-9` and `Companion` continuously with live `/dev/video0` camera eyes, `plughw:2,0` microphone ears, and open 2D physics/puzzle arena)
+> **AI Crawler Summary:** [`llms.txt`](./llms.txt)  
+> **Live Continuous Habitat Daemon:** `live/run_live_habitat.py` (`libalpha9.so` C-ABI hosting both `Alpha-9` and `Companion` continuously inside an unforced 2D physics/puzzle arena with optional opt-in external sensory streams via local `.env`)
 
 ---
 
@@ -52,15 +51,15 @@ alpha9/
     │       ├── heatmap.rs         # BiophysicalHeatMap (2D diffusion, ATP limits, settle/follow)
     │       ├── hippocampus.rs     # CrossModalBinding (Hebbian + 1-shot BTSP novelty exclusion)
     │       ├── lib.rs             # Unified continuous Organism::step(SensoryFrame -> MotorFrame)
-    │       ├── sensors.rs         # Log-Polar Retina (/dev/video0 camera) + 40-band ERB Cochlea (plughw:2,0 mic)
+    │       ├── sensors.rs         # Log-Polar Retina + 40-band ERB Cochlea
     │       ├── util.rs            # Pure numeric linear algebra & Xorshift64* RNG
     │       └── vocal.rs           # VocalTract (8-DOF articulatory 16 kHz PCM synthesizer)
-    ├── alpha-world/           # Procedural visual scenes, formant streams & V4L2/ALSA hardware capture
+    ├── alpha-world/           # Procedural visual scenes, formant streams & optional opt-in sensory capture
     ├── alpha-probe/           # Law 4: Read-only external telemetry & linear probes
     ├── alpha-exams/           # Law 3: Pre-registered biophysical & anti-cheat verification gates
     └── alpha-bridge/          # Native C-ABI shared library (libalpha9.so) hosting live Alpha-9 + Companion
 ├── live/
-│   └── run_live_habitat.py    # Continuous unforced 24/7 habitat daemon (real camera/mic + open 2D game arena)
+│   └── run_live_habitat.py    # Continuous unforced 24/7 habitat daemon (open 2D game arena + opt-in streams)
 └── AGENTS.md                  # Workspace law enforcing unforced external environments & biological purity
 ```
 

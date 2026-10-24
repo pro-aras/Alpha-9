@@ -156,11 +156,14 @@ fn main() {
     println!("One Single Living Organism (`ONLY child.step(&frame) -> MotorFrame`) From Birth To Maturity");
     println!("==========================================================================================");
 
-    let utts = load_audio_pool("/tmp/real_audio_pool.bin");
+    let audio_pool_p = std::env::var("ALPHA9_AUDIO_POOL").unwrap_or_else(|_| "state/real_audio_pool.bin".to_string());
+    let train_sc_p = std::env::var("ALPHA9_SCENES_TRAIN").unwrap_or_else(|_| "state/real_scenes_train.txt".to_string());
+    let hold_sc_p = std::env::var("ALPHA9_SCENES_HOLDOUT").unwrap_or_else(|_| "state/real_scenes_holdout.txt".to_string());
+    let utts = load_audio_pool(&audio_pool_p);
     let train_utts: Vec<&RealUtterance> = utts.iter().filter(|u| u.split == 0).collect();
     let test_utts: Vec<&RealUtterance> = utts.iter().filter(|u| u.split > 0).collect();
-    let train_scenes = load_scenes("/tmp/real_scenes_train.txt");
-    let holdout_scenes = load_scenes("/tmp/real_scenes_holdout.txt");
+    let train_scenes = load_scenes(&train_sc_p);
+    let holdout_scenes = load_scenes(&hold_sc_p);
 
     let mut child = Organism::new(Genome::default());
 
@@ -826,7 +829,7 @@ fn main() {
     //       * Language Stage 4: Unseen Two-Word Combinations (`"want cat"` from `"want milk"` + `"want toy"`)
     //       * Language Stage 5: Novel Use (Spontaneous Naming of Unseen Variant)
     //       * Companion Organism (`Alpha` + `Companion` co-developing via 16 kHz audio)
-    //       * Literal Hardware Eyes (`/dev/video0`) & Hardware Ears (`plughw:2,0`)
+    //       * Optional Opt-In External Sensory Stream (`ALPHA9_VIDEO_SOURCE`, `ALPHA9_AUDIO_SOURCE`)
     // ========================================================================================
     println!("\n[STAGE 8] LIVING CELL ECOLOGY, 4-CHANNEL WAKING-BRAIN GATE & 5 GROUNDED LANGUAGE STAGES");
     let mut lang_rng = Rng64::new(0xA1F9_2026_7788_99AA);
@@ -1184,9 +1187,11 @@ fn main() {
         novel_attended
     );
 
-    // Live Hardware Eyes (`/dev/video0` Razer Kiyo) & Hardware Ears (`plughw:2,0` Razer Kiyo Mic)
-    if let Some((cam_rgb, cw, ch)) = capture_hardware_eyes_rgb("/dev/video0") {
-        let mic_pcm = capture_hardware_ears_pcm_16khz("plughw:2,0", 8000).unwrap_or_default();
+    // Optional Opt-In External Video/Audio Sensory Stream (strictly disabled unless set in env)
+    let opt_vid = std::env::var("ALPHA9_VIDEO_SOURCE").unwrap_or_default();
+    let opt_aud = std::env::var("ALPHA9_AUDIO_SOURCE").unwrap_or_default();
+    if let Some((cam_rgb, cw, ch)) = capture_hardware_eyes_rgb(&opt_vid) {
+        let mic_pcm = capture_hardware_ears_pcm_16khz(&opt_aud, 8000).unwrap_or_default();
         let hw_motor = child.step(&SensoryFrame {
             retina_rgb: &cam_rgb,
             width: cw,
@@ -1197,7 +1202,7 @@ fn main() {
         let r_cnt = child.mind.cells.iter().filter(|c| c.tissue_kind == CELL_TISSUE_RETINA_MEANING).count();
         let w_cnt = child.mind.cells.iter().filter(|c| c.tissue_kind == CELL_TISSUE_COCHLEA_WORD).count();
         println!(
-            "  [Hardware Eyes `/dev/video0` ({}x{}) & Ears `plughw:2,0` ({} samples)] -> Gaze=({:.2}, {:.2}), Vocal=[{:.2}, {:.2}, {:.2}], RetinaCells={}, WordCells={}",
+            "  [External Opt-In Stream ({}x{}) & Audio ({} samples)] -> Gaze=({:.2}, {:.2}), Vocal=[{:.2}, {:.2}, {:.2}], RetinaCells={}, WordCells={}",
             cw, ch, mic_pcm.len(), hw_motor.gaze_xy[0], hw_motor.gaze_xy[1],
             hw_motor.vocal_tract[0], hw_motor.vocal_tract[1], hw_motor.vocal_tract[2],
             r_cnt, w_cnt

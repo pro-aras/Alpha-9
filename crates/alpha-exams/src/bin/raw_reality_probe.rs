@@ -1,5 +1,5 @@
 //! Raw, Unstaged Real-Data Diagnostic Probe (`raw_reality_probe`).
-//! Tests the UNTOUCHED `alpha-organism` on real `/data/alpha3-library` scenes and 60-speaker audio
+//! Tests the UNTOUCHED `alpha-organism` on external 3D scenes and 60-speaker audio
 //! to expose the exact biophysical/mathematical bottlenecks without artificial PASS/FAIL thresholds.
 
 use std::fs::File;
@@ -120,9 +120,12 @@ fn cos_sim(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn main() {
-    let audio_pool = load_real_audio_pool("/tmp/real_audio_pool.bin");
-    let train_scenes = load_real_scenes("/tmp/real_scenes_train.txt");
-    let holdout_scenes = load_real_scenes("/tmp/real_scenes_holdout.txt");
+    let audio_pool_p = std::env::var("ALPHA9_AUDIO_POOL").unwrap_or_else(|_| "state/real_audio_pool.bin".to_string());
+    let train_sc_p = std::env::var("ALPHA9_SCENES_TRAIN").unwrap_or_else(|_| "state/real_scenes_train.txt".to_string());
+    let hold_sc_p = std::env::var("ALPHA9_SCENES_HOLDOUT").unwrap_or_else(|_| "state/real_scenes_holdout.txt".to_string());
+    let audio_pool = load_real_audio_pool(&audio_pool_p);
+    let train_scenes = load_real_scenes(&train_sc_p);
+    let holdout_scenes = load_real_scenes(&hold_sc_p);
     let mut org = Organism::new(Genome::default());
     let mut rng = Rng64::new(100);
 
@@ -208,7 +211,7 @@ fn main() {
     // PROBE B: Visual Segmentation & Shape vs Colour Invariance Under Real Noise
     // -------------------------------------------------------------------------
     // 1. Test `Retina::segment()` flood-fill under:
-    //    (a) Clean PPM from `/data/alpha3-library/K/scenes`
+    //    (a) Clean PPM scene
     //    (b) Mild lighting gradient + sensor noise (`run_exp1.py` standard)
     //    (c) Realistic directional shadow gradient across the scene
     let mut recall_clean = 0.0f32;

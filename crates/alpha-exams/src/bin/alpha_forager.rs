@@ -1,14 +1,14 @@
-//! Alpha 9 Sensory Input Feeder & Autonomous Mini-PC Knowledge Forager (`alpha_forager`).
+//! Alpha 9 Sensory Input Feeder & Autonomous Knowledge Forager (`alpha_forager`).
 //!
 //! Features:
 //! 1. Direct visual (.ppm) and auditory (.wav) sensory feeding (`--mode feed`)
-//! 2. Autonomous Curiosity-Driven Mini-PC Knowledge Foraging (`--mode forage`) across:
-//!    - Stream 0: Real Mini-PC LibriSpeech Human Speech WAVs (`/data/alpha3-library/audio/librispeech`)
-//!    - Stream 1: Real Mini-PC Visual Scenes sampled via Biological Log-Polar Retina (`/data/alpha3-library/K/scenes`)
+//! 2. Autonomous Curiosity-Driven Knowledge Foraging (`--mode forage`) across:
+//!    - Stream 0: Speech WAVs (`ALPHA9_SPEECH_DIR`)
+//!    - Stream 1: Visual Scenes sampled via Biological Log-Polar Retina (`ALPHA9_SCENES_DIR`)
 //!    - Stream 2: Cross-Situational Grounded Naming Stream
-//!    - Stream 3: Local Research/Knowledge Document Reader (`/data/research` & `/data/dev/alpha9` rendered onto a visual canvas & scanned via Log-Polar Saccades + spoken syllables)
+//!    - Stream 3: Local Markdown Document Reader (`ALPHA9_DOCS_DIR` rendered onto a visual canvas & scanned via Log-Polar Saccades)
 //!    - Stream 4: Unlearnable White-Noise ("Noisy TV" trap control)
-//! 3. Persistent Binary Brain Checkpointing (`--checkpoint /data/dev/alpha9/state/organism.bin`)
+//! 3. Persistent Binary Brain Checkpointing (`--checkpoint state/organism.bin`)
 //!    so synaptic weights, lexicon prototypes, and homeostatic state persist across runs.
 
 use std::env;
@@ -265,7 +265,9 @@ fn main() {
     let mut mode = "forage".to_string();
     let mut ppm_path: Option<PathBuf> = None;
     let mut wav_path: Option<PathBuf> = None;
-    let mut ckpt_path = PathBuf::from("/data/dev/alpha9/state/organism.bin");
+    let mut ckpt_path = PathBuf::from(
+        env::var("ALPHA9_CHECKPOINT").unwrap_or_else(|_| "state/organism.bin".to_string()),
+    );
     let mut steps = 120usize;
 
     let mut i = 1usize;
@@ -349,12 +351,18 @@ fn main() {
     }
 
     let mut ppm_files = Vec::new();
-    collect_files_bounded(Path::new("/data/alpha3-library/K/scenes"), "ppm", 400, &mut ppm_files);
+    if let Ok(sc_dir) = env::var("ALPHA9_SCENES_DIR") {
+        collect_files_bounded(Path::new(&sc_dir), "ppm", 400, &mut ppm_files);
+    }
     let mut wav_files = Vec::new();
-    collect_files_bounded(Path::new("/data/alpha3-library/audio/librispeech/dev-clean-wav"), "wav", 400, &mut wav_files);
+    if let Ok(sp_dir) = env::var("ALPHA9_SPEECH_DIR") {
+        collect_files_bounded(Path::new(&sp_dir), "wav", 400, &mut wav_files);
+    }
     let mut doc_files = Vec::new();
-    collect_files_bounded(Path::new("/data/research"), "md", 100, &mut doc_files);
-    collect_files_bounded(Path::new("/data/dev/alpha9"), "md", 20, &mut doc_files);
+    if let Ok(dc_dir) = env::var("ALPHA9_DOCS_DIR") {
+        collect_files_bounded(Path::new(&dc_dir), "md", 100, &mut doc_files);
+    }
+    collect_files_bounded(Path::new("."), "md", 20, &mut doc_files);
 
     println!("==========================================================================");
     println!("ALPHA 9 AUTONOMOUS MINI-PC KNOWLEDGE FORAGER (LOG-POLAR RETINA + PERSISTENT BRAIN)");

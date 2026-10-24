@@ -2,8 +2,8 @@ use std::path::Path;
 use alpha_exams::run_all_gates;
 
 fn main() {
-    let src_dir = Path::new("/data/dev/alpha9/crates/alpha-organism/src");
-    let r = run_all_gates(src_dir);
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../alpha-organism/src");
+    let r = run_all_gates(&src_dir);
     println!("==========================================================================");
     println!("ALPHA 9 BIOPHYSICAL, FEELING-DRIVEN & SENSORY EMERGENCE GATES");
     println!("==========================================================================");

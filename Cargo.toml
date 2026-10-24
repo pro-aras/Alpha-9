@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 version = "9.0.0"
 edition = "2021"
-authors = ["Ahmad <ops.proaras.app>"]
+authors = ["pro-aras"]
 license = "MIT"
 
 [profile.release]

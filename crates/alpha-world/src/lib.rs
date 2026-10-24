@@ -162,10 +162,12 @@ pub fn synthesize_two_word_phrase(
     out
 }
 
-/// Literal Hardware Eyes (`/dev/video0`, e.g. Razer Kiyo):
-/// Captures a live 640x480 YUYV frame directly from `/dev/video0` in memory and transduces it
-/// into a 128x128 RGB retinal image (`width = 128, height = 128`).
+/// Optional external video frame capture (strictly opt-in via caller-supplied device/stream path):
+/// Transduces a 640x480 YUYV frame in memory into a 128x128 RGB retinal image.
 pub fn capture_hardware_eyes_rgb(video_dev: &str) -> Option<(Vec<u8>, u16, u16)> {
+    if video_dev.trim().is_empty() {
+        return None;
+    }
     use std::process::Command;
     let out = Command::new("v4l2-ctl")
         .args([
@@ -208,9 +210,11 @@ pub fn capture_hardware_eyes_rgb(video_dev: &str) -> Option<(Vec<u8>, u16, u16)>
     Some((rgb, dst_w as u16, dst_h as u16))
 }
 
-/// Literal Hardware Ears (`plughw:2,0`, Razer Kiyo USB Microphone):
-/// Captures live 16 kHz mono PCM audio from the physical USB microphone in memory.
+/// Optional external 16 kHz mono PCM audio capture (strictly opt-in via caller-supplied device name):
 pub fn capture_hardware_ears_pcm_16khz(alsa_dev: &str, max_samples: usize) -> Option<Vec<f32>> {
+    if alsa_dev.trim().is_empty() {
+        return None;
+    }
     use std::process::Command;
     let out = Command::new("arecord")
         .args([
